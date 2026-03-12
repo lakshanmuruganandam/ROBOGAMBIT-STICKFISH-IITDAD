@@ -1,4 +1,11 @@
 """
+Prototype V4 Clock — Best of All Bots Combined
+=================================================================
+Base: LADOO-FINAL-CLOCK-2 (IIR, inlined TT, TT aging, SEE pruning,
+      contempt 50, connected pawns, 3 killers, score instability TM)
+Added: Pawn EG PST, better unstoppable pawn detection (king intercept,
+       self-blocking check, reduced bonus 400)
+
 Standalone — numpy + stdlib only.
 """
 
@@ -103,6 +110,15 @@ _PAWN_T = (
      90,  90,  90,  90,  90,  90,
 )
 
+_PAWN_EG = (
+      0,   0,   0,   0,   0,   0,
+     10,  12,  14,  14,  12,  10,
+     22,  26,  35,  35,  26,  22,
+     40,  48,  58,  58,  48,  40,
+     75,  82,  95,  95,  82,  75,
+    130, 130, 130, 130, 130, 130,
+)
+
 _KNIGHT_T = (
     -28, -15,  -5,  -5, -15, -28,
     -15,   2,  20,  20,   2, -15,
@@ -152,7 +168,7 @@ PST_MG = [None] * 11
 PST_EG = [None] * 11
 
 _WMG = {WP: _PAWN_T, WN: _KNIGHT_T, WB: _BISHOP_T, WQ: _QUEEN_T, WK: _KING_MG}
-_WEG = {WP: _PAWN_T, WN: _KNIGHT_T, WB: _BISHOP_T, WQ: _QUEEN_T, WK: _KING_EG}
+_WEG = {WP: _PAWN_EG, WN: _KNIGHT_T, WB: _BISHOP_T, WQ: _QUEEN_T, WK: _KING_EG}
 
 for _p in range(1, 6):
     PST_MG[_p] = _WMG[_p]
@@ -703,19 +719,26 @@ class Board:
                     pawn_dist = 5 - r
                     if pawn_dist <= 3:
                         unstoppable = True
-                        for ei in range(N):
-                            ep = sq[ei]
-                            if ep and SIDE[ep] == 2 and ep != BK:
-                                min_d = 99
-                                for pr in range(r + 1, 6):
-                                    md = abs(ei // 6 - pr) + abs(ei % 6 - c)
-                                    if md < min_d:
-                                        min_d = md
-                                if min_d <= pawn_dist:
-                                    unstoppable = False
-                                    break
+                        # Check own pawns blocking path
+                        for pr in range(r + 1, 6):
+                            if sq[pr * 6 + c] == WP:
+                                unstoppable = False
+                                break
                         if unstoppable:
-                            passed_bonus = 600
+                            # Check ALL enemy pieces INCLUDING king
+                            for ei in range(N):
+                                ep = sq[ei]
+                                if ep and SIDE[ep] == 2:
+                                    min_d = 99
+                                    for pr in range(r + 1, 6):
+                                        md = abs(ei // 6 - pr) + abs(ei % 6 - c)
+                                        if md < min_d:
+                                            min_d = md
+                                    if min_d <= pawn_dist:
+                                        unstoppable = False
+                                        break
+                        if unstoppable:
+                            passed_bonus = 400
                     score += passed_bonus
             elif p == BP:
                 r, c = i // 6, i % 6
@@ -733,19 +756,26 @@ class Board:
                     pawn_dist = r
                     if pawn_dist <= 3:
                         unstoppable = True
-                        for ei in range(N):
-                            ep = sq[ei]
-                            if ep and SIDE[ep] == 1 and ep != WK:
-                                min_d = 99
-                                for pr in range(0, r):
-                                    md = abs(ei // 6 - pr) + abs(ei % 6 - c)
-                                    if md < min_d:
-                                        min_d = md
-                                if min_d <= pawn_dist:
-                                    unstoppable = False
-                                    break
+                        # Check own pawns blocking path
+                        for pr in range(0, r):
+                            if sq[pr * 6 + c] == BP:
+                                unstoppable = False
+                                break
                         if unstoppable:
-                            passed_bonus = 600
+                            # Check ALL enemy pieces INCLUDING king
+                            for ei in range(N):
+                                ep = sq[ei]
+                                if ep and SIDE[ep] == 1:
+                                    min_d = 99
+                                    for pr in range(0, r):
+                                        md = abs(ei // 6 - pr) + abs(ei % 6 - c)
+                                        if md < min_d:
+                                            min_d = md
+                                    if min_d <= pawn_dist:
+                                        unstoppable = False
+                                        break
+                        if unstoppable:
+                            passed_bonus = 400
                     score -= passed_bonus
 
         # Promotion threat
@@ -831,22 +861,6 @@ class Board:
             for i in range(N):
                 if sq[i] == WP and i // 6 >= 4:
                     score += 15
-
-        # Hanging piece penalty (undefended pieces attacked by enemy)
-        for i in range(N):
-            p = sq[i]
-            if p in (WN, WB, WQ):
-                if not self.attacked(i, True):
-                    if self.attacked(i, False):
-                        score -= MAT[p] // 4
-                    else:
-                        score -= 8
-            elif p in (BN, BB, BQ):
-                if not self.attacked(i, False):
-                    if self.attacked(i, True):
-                        score += MAT[p] // 4
-                    else:
-                        score += 8
 
         # Endgame king cornering (stronger gradient for big advantages)
         if is_eg and wki >= 0 and bki >= 0:
