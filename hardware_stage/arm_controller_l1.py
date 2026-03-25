@@ -143,6 +143,28 @@ class ArmController:
         time.sleep(MAGNET_RELEASE_DELAY)
         log.info("Gripper OFF")
 
+    def gripper_open(self):
+        """Open mechanical gripper fingers (servo control)."""
+        cmd = json.dumps({"T": 11, "id": 5, "angle": 30.0, "t": 200})
+        url = f"{self._base_url}/js?json={quote(cmd)}"
+        try:
+            self._session.get(url, timeout=HTTP_TIMEOUT)
+            time.sleep(0.3)
+            log.info("Gripper OPEN")
+        except Exception as e:
+            log.warning(f"Gripper open failed: {e}")
+
+    def gripper_close(self):
+        """Close mechanical gripper fingers (servo control)."""
+        cmd = json.dumps({"T": 11, "id": 5, "angle": 150.0, "t": 200})
+        url = f"{self._base_url}/js?json={quote(cmd)}"
+        try:
+            self._session.get(url, timeout=HTTP_TIMEOUT)
+            time.sleep(0.3)
+            log.info("Gripper CLOSED")
+        except Exception as e:
+            log.warning(f"Gripper close failed: {e}")
+
     def grip(self):
         """Alias for gripper_on (used by setup_phase)."""
         self.gripper_on()
@@ -154,24 +176,58 @@ class ArmController:
     # ── High-Level Pick & Place ───────────────────────────────────────────
 
     def pick_piece(self, x, y, speed=None):
-        """Pick sequence: hover -> lower -> magnet on -> raise."""
+        """Pick sequence: hover -> open gripper -> lower -> close gripper -> magnet on -> raise.
+        
+        FIXED: Opens gripper BEFORE lowering to prevent crushing pieces.
+        """
         speed = speed or self._speed
+        
+        # 1. Hover above target
         self.arm_move(x, y, SAFE_Z, speed)
         time.sleep(SETTLE_DELAY)
+        
+        # 2. Open gripper while hovering (SAFE - piece won't fall)
+        self.gripper_open()
+        time.sleep(SETTLE_DELAY)
+        
+        # 3. Lower to piece
         self.arm_move(x, y, PICK_Z, speed)
         time.sleep(SETTLE_DELAY)
+        
+        # 4. Close gripper ON the piece
+        self.gripper_close()
+        time.sleep(SETTLE_DELAY)
+        
+        # 5. Activate magnet
         self.gripper_on()
+        
+        # 6. Lift
         self.arm_move(x, y, SAFE_Z, speed)
         return True
 
     def place_piece(self, x, y, speed=None):
-        """Place sequence: hover -> lower -> magnet off -> raise."""
+        """Place sequence: hover -> lower -> magnet off -> open gripper -> raise.
+        
+        FIXED: Opens gripper AFTER lowering to prevent piece from flying off.
+        """
         speed = speed or self._speed
+        
+        # 1. Hover above target
         self.arm_move(x, y, SAFE_Z, speed)
         time.sleep(SETTLE_DELAY)
+        
+        # 2. Lower to placement
         self.arm_move(x, y, PLACE_Z, speed)
         time.sleep(SETTLE_DELAY)
+        
+        # 3. Release piece
         self.gripper_off()
+        time.sleep(SETTLE_DELAY)
+        
+        # 4. Open gripper
+        self.gripper_open()
+        
+        # 5. Lift
         self.arm_move(x, y, SAFE_Z, speed)
         return True
 

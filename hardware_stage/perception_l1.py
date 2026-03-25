@@ -241,9 +241,11 @@ class PerceptionSystem:
             24 -> (-350,  350)   top-left     (near A6)
         """
         if ids is None:
+            print("[PerceptionSystem] Homography FAILED: No markers detected")
             return
 
         ids_flat = ids.flatten()
+        detected_corners = [int(m) for m in ids_flat if int(m) in self.corner_world]
 
         pixel_pts = []
         world_pts = []
@@ -258,7 +260,7 @@ class PerceptionSystem:
                 world_pts.append(list(self.corner_world[mid]))
 
         if len(pixel_pts) < 4:
-            # Not enough corners to compute — keep old homography if available
+            print(f"[PerceptionSystem] Homography FAILED: Only {len(pixel_pts)} corner markers (need 4). Detected: {detected_corners}")
             return
 
         pixel_arr = np.array(pixel_pts, dtype=np.float32)
@@ -266,7 +268,7 @@ class PerceptionSystem:
 
         H, status = cv2.findHomography(pixel_arr, world_arr, cv2.RANSAC, 5.0)
         if H is None:
-            print("[PerceptionSystem] Homography computation failed")
+            print("[PerceptionSystem] Homography FAILED: findHomography returned None")
             return
 
         # Validate via reprojection error
@@ -277,11 +279,12 @@ class PerceptionSystem:
         mean_err = float(np.mean(errors))
 
         if mean_err > 50.0:
-            print(f"[PerceptionSystem] Homography rejected: reprojection error {mean_err:.1f} mm")
+            print(f"[PerceptionSystem] Homography FAILED: Reprojection error {mean_err:.1f} mm (max 50mm)")
             return
 
         self.H_matrix = H
         self._homography_error = mean_err
+        print(f"[PerceptionSystem] Homography OK: {mean_err:.1f} mm reprojection error")
 
     # ------------------------------------------------------------------ #
     #  Coordinate transforms
@@ -391,6 +394,69 @@ class PerceptionSystem:
             self._latest_board = new_board.copy()
 
         return new_board
+
+    def capture_board(self):
+        """Alias for get_board_state() - returns 6x6 board array.
+        Used by setup_phase for initial board verification."""
+        return self.get_board_state()
+
+    def get_piece_poses(self, corners, ids):
+        """
+        Get world coordinates (x, y) of all detected pieces.
+
+        Returns dict: {piece_id: (world_x, world_y, row, col)}
+        For each piece marker, computes the exact world position via homography.
+        """
+        poses = {}
+
+        if self.H_matrix is None or ids is None:
+            return poses
+
+        ids_flat = ids.flatten()
+
+        for i, mid in enumerate(ids_flat):
+            mid = int(mid)
+            if mid not in ARUCO_PIECE_IDS:
+                continue
+
+            marker_corners = corners[i][0]
+            cx = float(np.mean(marker_corners[:, 0]))
+            cy = float(np.mean(marker_corners[:, 1]))
+
+            wx, wy = self.pixel_to_world(cx, cy)
+            if wx is None:
+                continue
+
+            row = int(round((wy + 250.0) / SQUARE_SIZE_MM))
+            col = int(round((wx + 250.0) / SQUARE_SIZE_MM))
+            row = max(0, min(BOARD_SIZE - 1, row))
+            col = max(0, min(BOARD_SIZE - 1, col))
+
+            poses[mid] = (wx, wy, row, col)
+
+        return poses
+
+    def get_board_with_poses(self):
+        """
+        Get both board state and piece poses in one frame read.
+        Returns (board, poses_dict) where poses_dict = {piece_id: (wx, wy, row, col)}
+        """
+        frame = self.recv_frame()
+        if frame is None:
+            return None, {}
+
+        corners, ids = self.detect_markers(frame)
+        self.compute_homography(corners, ids)
+        board = self.build_board(corners, ids)
+        poses = self.get_piece_poses(corners, ids)
+
+        with self._lock:
+            self.prev_board = self.board.copy()
+            self.board = board
+            self._latest_frame = frame
+            self._latest_board = board.copy()
+
+        return board, poses
 
     # ------------------------------------------------------------------ #
     #  Move detection
