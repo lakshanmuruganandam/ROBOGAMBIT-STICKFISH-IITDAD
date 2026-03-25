@@ -43,8 +43,8 @@ from config_l1 import (
     PERCEPTION_STABLE_FRAMES, PERCEPTION_STABLE_TIMEOUT,
     GAME_CLOCK_TOTAL, CLOCK_SAFETY_BUFFER,
 )
-from arm_controller_l1 import ArmController
-from perception_l1 import PerceptionSystem
+from arm_controller_l2 import ArmController
+from perception_l2 import PerceptionSystem
 
 
 # ── Logging ───────────────────────────────────────────────────────────────────
