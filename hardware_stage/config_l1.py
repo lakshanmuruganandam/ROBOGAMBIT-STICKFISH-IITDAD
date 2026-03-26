@@ -29,13 +29,13 @@ ARM_IP              = "192.168.4.1"
 ARM_PORT            = 80
 ARM_BASE_URL        = f"http://{ARM_IP}:{ARM_PORT}"
 
-CAMERA_IP           = "10.168.70.199"
+CAMERA_IP           = "192.168.4.6"
 CAMERA_HOST         = CAMERA_IP                  # alias for perception_hw
 CAMERA_PORT         = 9999
 CAMERA_RESOLUTION   = (1920, 1080)
 CAMERA_FPS          = 30
 
-SERIAL_PORT         = "COM3"
+SERIAL_PORT         = "/dev/ttyUSB0"
 BAUD_RATE           = 115200
 SERIAL_BAUD         = BAUD_RATE                  # alias for arm_controller
 SERIAL_TIMEOUT      = 1.0
@@ -46,7 +46,7 @@ SERIAL_TIMEOUT      = 1.0
 # =============================================================================
 
 BOARD_SIZE          = 6
-SQUARE_SIZE_MM      = 100
+SQUARE_SIZE_MM      = 60
 CELL_SIZE_MM        = SQUARE_SIZE_MM             # alias for perception_hw
 CELL_SIZE           = SQUARE_SIZE_MM             # alias for setup_phase
 BOARD_SPAN_MM       = BOARD_SIZE * SQUARE_SIZE_MM
@@ -55,8 +55,8 @@ FILES               = "ABCDEF"
 RANKS               = "123456"
 
 # Cell centres in world coords (mm). Row 0 = rank 1, Col 0 = file A.
-CELL_CENTERS_X = [-250.0, -150.0, -50.0, 50.0, 150.0, 250.0]   # A..F
-CELL_CENTERS_Y = [-250.0, -150.0, -50.0, 50.0, 150.0, 250.0]   # rank 1..6
+CELL_CENTERS_X = [-150.0, -90.0, -30.0, 30.0, 90.0, 150.0]   # A..F
+CELL_CENTERS_Y = [-150.0, -90.0, -30.0, 30.0, 90.0, 150.0]   # rank 1..6
 
 # Pre-built lookup: CELL_WORLD[row][col] = (world_x, world_y)
 CELL_WORLD = [
@@ -70,10 +70,10 @@ BOARD_ORIGIN = (CELL_CENTERS_X[0], CELL_CENTERS_Y[0], 10.0)
 
 # Corner marker world positions (+/-350mm outside the board)
 CORNER_WORLD_COORDS = {
-    21: ( 350.0,  350.0),
-    22: ( 350.0, -350.0),
-    23: (-350.0, -350.0),
-    24: (-350.0,  350.0),
+    21: ( 212.5,  212.5),
+    22: ( 212.5, -212.5),
+    23: (-212.5, -212.5),
+    24: (-212.5,  212.5),
 }
 CORNER_MARKER_IDS = list(CORNER_WORLD_COORDS.keys())
 

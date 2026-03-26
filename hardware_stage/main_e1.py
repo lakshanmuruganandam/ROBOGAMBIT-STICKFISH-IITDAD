@@ -11,7 +11,7 @@ Usage:
   python main.py --white --manual     # play as white, manual trigger
   python main.py --black --manual     # play as black, manual trigger
   python main.py --white              # play as white, auto-detect turns
-  python main.py --calibrate          # interactive calibration wizard
+  python main_e1.py --calibrate          # interactive calibration wizard
 """
 
 import game
