@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>RoboGambit Visual Simulator</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <h1>RoboGambit L2 Visual Simulator</h1>
+    <div class="controls">
+      <button id="startBtn">Start</button>
+      <button id="pauseBtn">Pause</button>
+      <button id="stepBtn">Step</button>
+      <button id="resetBtn">Reset</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="panel board-panel">
+      <h2>Board + Arm</h2>
+      <canvas id="boardCanvas" width="760" height="760"></canvas>
+      <div class="stats" id="stats"></div>
+    </section>
+
+    <section class="panel camera-panel">
+      <h2>Camera Feed (Simulated)</h2>
+      <canvas id="cameraCanvas" width="480" height="360"></canvas>
+      <p class="hint">Top-down perception mock with marker-style overlays.</p>
+
+      <div class="fault-grid">
+        <label>Speed
+          <input id="simSpeed" type="range" min="0.2" max="3.0" step="0.1" value="1.0" />
+          <span id="simSpeedVal">1.0x</span>
+        </label>
+        <label>API Delay (ms)
+          <input id="apiDelay" type="range" min="0" max="1200" step="50" value="0" />
+          <span id="apiDelayVal">0</span>
+        </label>
+        <label>Think Delay (ms)
+          <input id="planDelay" type="range" min="0" max="3000" step="100" value="0" />
+          <span id="planDelayVal">0</span>
+        </label>
+        <label>Drop Prob
+          <input id="dropProb" type="range" min="0" max="0.5" step="0.01" value="0" />
+          <span id="dropProbVal">0.00</span>
+        </label>
+        <label>Invalid Move Prob
+          <input id="invalidProb" type="range" min="0" max="0.3" step="0.01" value="0" />
+          <span id="invalidProbVal">0.00</span>
+        </label>
+        <label>Arm Stall Prob
+          <input id="stallProb" type="range" min="0" max="0.3" step="0.01" value="0" />
+          <span id="stallProbVal">0.00</span>
+        </label>
+        <label>Camera Lag (ms)
+          <input id="camLag" type="range" min="0" max="2000" step="50" value="0" />
+          <span id="camLagVal">0</span>
+        </label>
+        <label>Camera Noise
+          <input id="camNoise" type="range" min="0" max="1" step="0.05" value="0" />
+          <span id="camNoiseVal">0.00</span>
+        </label>
+      </div>
+      <button id="applyFaultsBtn">Apply Fault Settings</button>
+    </section>
+
+    <section class="panel log-panel">
+      <h2>Live Log</h2>
+      <div id="logBox"></div>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

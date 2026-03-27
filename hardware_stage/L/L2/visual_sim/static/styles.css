@@ -1,0 +1,161 @@
+:root {
+  --bg: #0f1720;
+  --panel: #162434;
+  --panel-2: #1f3044;
+  --line: #2f475f;
+  --text: #d7e5f3;
+  --muted: #8da6bd;
+  --accent: #ffb84d;
+  --accent-2: #66d9ff;
+  --danger: #ff7272;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  color: var(--text);
+  background:
+    radial-gradient(circle at 10% 10%, #1a2c3d 0%, transparent 28%),
+    radial-gradient(circle at 90% 20%, #21354a 0%, transparent 30%),
+    linear-gradient(160deg, #0e1620 0%, #0a111a 100%);
+  font-family: "Segoe UI", "Trebuchet MS", sans-serif;
+}
+
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  padding: 1rem 1.2rem;
+  border-bottom: 1px solid var(--line);
+  background: rgba(10, 22, 34, 0.75);
+  backdrop-filter: blur(6px);
+}
+
+.topbar h1 {
+  margin: 0;
+  font-size: 1.2rem;
+  letter-spacing: 0.4px;
+}
+
+.controls {
+  display: flex;
+  gap: 0.55rem;
+}
+
+button {
+  border: 1px solid var(--line);
+  background: linear-gradient(180deg, #1f3550 0%, #15273a 100%);
+  color: var(--text);
+  border-radius: 10px;
+  padding: 0.45rem 0.8rem;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+button:hover {
+  border-color: var(--accent-2);
+}
+
+.layout {
+  padding: 1rem;
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: 1.6fr 1fr;
+  grid-template-areas:
+    "board camera"
+    "board log";
+}
+
+.panel {
+  background: linear-gradient(170deg, var(--panel) 0%, var(--panel-2) 100%);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 0.85rem;
+}
+
+.panel h2 {
+  margin: 0 0 0.6rem;
+  font-size: 1rem;
+}
+
+.board-panel { grid-area: board; }
+.camera-panel { grid-area: camera; }
+.log-panel { grid-area: log; }
+
+canvas {
+  width: 100%;
+  height: auto;
+  border-radius: 12px;
+  border: 1px solid #2b4158;
+  background: #0b121c;
+}
+
+.stats {
+  margin-top: 0.65rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.hint {
+  color: var(--muted);
+  margin-top: 0.5rem;
+  font-size: 0.85rem;
+}
+
+.fault-grid {
+  margin-top: 0.7rem;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem 0.8rem;
+}
+
+.fault-grid label {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 0.3rem 0.5rem;
+  color: #b8cfe2;
+  font-size: 0.82rem;
+}
+
+.fault-grid input[type="range"] {
+  grid-column: 1 / -1;
+  width: 100%;
+}
+
+#applyFaultsBtn {
+  margin-top: 0.65rem;
+  width: 100%;
+}
+
+#logBox {
+  max-height: 280px;
+  overflow: auto;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 0.82rem;
+  line-height: 1.35;
+  color: #c8deef;
+  background: rgba(8, 15, 22, 0.75);
+  border: 1px solid #2a3e55;
+  border-radius: 10px;
+  padding: 0.6rem;
+}
+
+.log-line {
+  border-bottom: 1px dashed rgba(120, 155, 190, 0.2);
+  padding: 0.2rem 0;
+}
+
+@media (max-width: 1080px) {
+  .layout {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "board"
+      "camera"
+      "log";
+  }
+}
