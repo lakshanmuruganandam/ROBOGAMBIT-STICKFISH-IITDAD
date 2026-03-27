@@ -18,11 +18,14 @@ import numpy as np
 
 # Inlined configuration (merged from config.py) for standalone perception.py execution.
 BOARD_SIZE = 6
-CELL_CENTERS_X = [-150.0, -90.0, -30.0, 30.0, 90.0, 150.0]
-CELL_CENTERS_Y = [-150.0, -90.0, -30.0, 30.0, 90.0, 150.0]
+SQUARE_SIZE_MM = 60.0
+TOP_LEFT_X_MM = 180.0
+TOP_LEFT_Y_MM = 180.0
+CELL_CENTERS_X = [TOP_LEFT_X_MM - (row * SQUARE_SIZE_MM + SQUARE_SIZE_MM / 2.0) for row in range(BOARD_SIZE)]
+CELL_CENTERS_Y = [TOP_LEFT_Y_MM - (col * SQUARE_SIZE_MM + SQUARE_SIZE_MM / 2.0) for col in range(BOARD_SIZE)]
 CELL_THRESHOLD_MM = 60.0
 
-CAMERA_IP = os.getenv("ROBO_CAMERA_IP", "192.168.4.6")
+CAMERA_IP = os.getenv("ROBO_CAMERA_IP", "10.168.70.199")
 CAMERA_PORT = int(os.getenv("ROBO_CAMERA_PORT", "9999"))
 CAMERA_CONNECT_TIMEOUT = float(os.getenv("ROBO_CAMERA_CONNECT_TIMEOUT", "8.0"))
 CAMERA_RECV_TIMEOUT = float(os.getenv("ROBO_CAMERA_RECV_TIMEOUT", "8.0"))
@@ -137,8 +140,18 @@ class PerceptionSystem:
             try:
                 chunk = self._sock.recv(max(4096, nbytes - len(self._recv_buf)))
             except OSError:
+                try:
+                    self._sock.close()
+                except OSError:
+                    pass
+                self._sock = None
                 return None
             if not chunk:
+                try:
+                    self._sock.close()
+                except OSError:
+                    pass
+                self._sock = None
                 return None
             self._recv_buf += chunk
         out = self._recv_buf[:nbytes]
@@ -245,8 +258,8 @@ class PerceptionSystem:
         best_dist = 1e9
         for row in range(BOARD_SIZE):
             for col in range(BOARD_SIZE):
-                dx = wx - CELL_CENTERS_X[col]
-                dy = wy - CELL_CENTERS_Y[row]
+                dx = wx - CELL_CENTERS_X[row]
+                dy = wy - CELL_CENTERS_Y[col]
                 dist = (dx * dx + dy * dy) ** 0.5
                 if dist < best_dist:
                     best_dist = dist

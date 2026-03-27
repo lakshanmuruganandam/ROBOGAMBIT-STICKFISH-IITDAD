@@ -48,8 +48,10 @@ RETRY_DELAY_BASE = float(os.getenv("ROBO_RETRY_DELAY", "0.7"))
 
 BOARD_SIZE = 6
 SQUARE_SIZE_MM = 60.0
-CELL_CENTERS_X = [-150.0, -90.0, -30.0, 30.0, 90.0, 150.0]
-CELL_CENTERS_Y = [-150.0, -90.0, -30.0, 30.0, 90.0, 150.0]
+TOP_LEFT_X_MM = 180.0
+TOP_LEFT_Y_MM = 180.0
+CELL_CENTERS_X = [TOP_LEFT_X_MM - (row * SQUARE_SIZE_MM + SQUARE_SIZE_MM / 2.0) for row in range(BOARD_SIZE)]
+CELL_CENTERS_Y = [TOP_LEFT_Y_MM - (col * SQUARE_SIZE_MM + SQUARE_SIZE_MM / 2.0) for col in range(BOARD_SIZE)]
 
 Z_SAFE = 180.0
 Z_PICK = 10.0
@@ -106,7 +108,7 @@ def cell_to_rc(cell: str) -> Tuple[int, int]:
 
 
 def rc_to_world(row: int, col: int) -> Tuple[float, float]:
-    return CELL_CENTERS_X[col], CELL_CENTERS_Y[row]
+    return CELL_CENTERS_X[row], CELL_CENTERS_Y[col]
 
 try:
     import serial  # type: ignore
