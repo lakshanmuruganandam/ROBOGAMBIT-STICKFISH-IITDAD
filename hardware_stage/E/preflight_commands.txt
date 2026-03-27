@@ -1,0 +1,44 @@
+# E preflight command pack
+# Copy-paste from this file on the remote machine.
+
+# 1) Go to E folder
+cd ~/ROBOGAMBIT-STICKFISH-IITDAD/hardware_stage/E
+
+# 2) Run full preflight (multi-IP + multi-port + JSON output)
+python3 full_preflight.py \
+  --camera-ip 127.0.0.1 \
+  --camera-port 9994 \
+  --camera-candidates 127.0.0.1,192.168.4.2,192.168.4.6 \
+  --camera-port-candidates 9994,9999 \
+  --json-out preflight.json
+
+# 3) If camera shows connect_ex=11 or header timeout, hard-restart camera server
+pkill -f "python3.*9994"
+sleep 1
+# Start your camera server again here (use your project-specific start command)
+
+# 4) Verify listener exists
+ss -lntp | grep 9994
+
+# 5) Verify local TCP connect
+nc -vz -w 2 127.0.0.1 9994
+
+# 6) Verify stream protocol header length
+python3 - << 'PY'
+import socket
+s = socket.create_connection(("127.0.0.1", 9994), 3)
+h = s.recv(8)
+print("header_len", len(h), "hex", h.hex())
+s.close()
+PY
+
+# Expected:
+# header_len must be 8
+
+# 7) Re-run preflight after restart
+python3 full_preflight.py \
+  --camera-ip 127.0.0.1 \
+  --camera-port 9994 \
+  --camera-candidates 127.0.0.1,192.168.4.2,192.168.4.6 \
+  --camera-port-candidates 9994,9999 \
+  --json-out preflight_after_restart.json
