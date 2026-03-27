@@ -506,6 +506,43 @@ def accept_opponent_board_change(before: np.ndarray, after: np.ndarray) -> Tuple
     return True, "ok"
 
 
+def accept_board_change_for_side(before: np.ndarray, after: np.ndarray, play_white: bool) -> Tuple[bool, str]:
+    accept, reason = accept_opponent_board_change(before, after)
+    if not accept:
+        return False, reason
+
+    own_ids = _side_piece_ids(play_white)
+
+    for fr in range(BOARD_SIZE):
+        for fc in range(BOARD_SIZE):
+            src_piece = int(before[fr, fc])
+            if src_piece not in own_ids:
+                continue
+            if int(after[fr, fc]) != EMPTY:
+                continue
+
+            for tr in range(BOARD_SIZE):
+                for tc in range(BOARD_SIZE):
+                    if (fr, fc) == (tr, tc):
+                        continue
+                    dst_after = int(after[tr, tc])
+                    if dst_after not in own_ids:
+                        continue
+
+                    promotion = dst_after if dst_after != src_piece else None
+                    move = ParsedMove(piece=src_piece, from_cell=(fr, fc), to_cell=(tr, tc), promotion=promotion)
+                    ok, _ = validate_move_for_side(before, move, play_white)
+                    if not ok:
+                        continue
+
+                    expected, _ = apply_move(before, move)
+                    if np.array_equal(expected, after):
+                        return True, "ok"
+
+    side = "white" if play_white else "black"
+    return False, f"board change does not match one legal {side} move"
+
+
 def _recover_camera_stream(perception: PerceptionSystem, stats: RuntimeStats) -> bool:
     stats.recoveries += 1
     stats.camera_recovers += 1
@@ -768,6 +805,23 @@ def request_human_move(board: np.ndarray, play_white: bool) -> Tuple[Optional[st
             return None, False
 
 
+def _prompt_our_turn_mode(default_mode: str) -> str:
+    default_mode = default_mode if default_mode in {"engine", "human", "hand"} else "engine"
+    print("\n[TEAM MODE] Choose our move source: [e]ngine, [t]yped-human, [h]and")
+    print(f"Press Enter for default: {default_mode}")
+    while True:
+        raw = input("Our turn source [e/t/h]: ").strip().lower()
+        if raw == "":
+            return default_mode
+        if raw in {"e", "engine"}:
+            return "engine"
+        if raw in {"t", "typed", "human"}:
+            return "human"
+        if raw in {"h", "hand"}:
+            return "hand"
+        print("Invalid choice. Use e, t, or h.")
+
+
 def _is_game_over(board: np.ndarray) -> bool:
     has_wk = bool(np.any(board == 5))
     has_bk = bool(np.any(board == 10))
@@ -820,15 +874,66 @@ def _wait_and_accept_opponent_board(
     return changed_retry
 
 
+def _wait_and_accept_board_for_side(
+    perception: PerceptionSystem,
+    board: np.ndarray,
+    manual_mode: bool,
+    stats: RuntimeStats,
+    promotions: PromotionTracker,
+    play_white_side: bool,
+    actor_label: str,
+) -> Optional[np.ndarray]:
+    if manual_mode:
+        input(f"Press Enter after {actor_label} move is complete...")
+        changed = perception.wait_for_stable_board(timeout=30.0)
+    else:
+        changed = perception.wait_for_board_change(board)
+
+    if changed is None:
+        log.warning("timeout waiting for %s move, attempting camera recovery", actor_label)
+        if _recover_camera_stream(perception, stats):
+            changed = perception.wait_for_board_change(board, timeout=45.0)
+    if changed is None:
+        return None
+
+    changed = promotions.apply(changed)
+    accept, reason = accept_board_change_for_side(board, changed, play_white=play_white_side)
+    if accept:
+        return changed
+
+    stats.opponent_rejects += 1
+    log.warning("rejected %s board change: %s", actor_label, reason)
+    changed_retry = perception.wait_for_stable_board(timeout=4.0)
+    if changed_retry is None:
+        return None
+
+    changed_retry = promotions.apply(changed_retry)
+    accept, reason = accept_board_change_for_side(board, changed_retry, play_white=play_white_side)
+    if not accept:
+        stats.opponent_rejects += 1
+        log.warning("rejected retry %s board change: %s", actor_label, reason)
+        return None
+    return changed_retry
+
+
 def run_game(
     play_white: bool,
     manual_mode: bool = False,
     human_mode: bool = False,
+    hand_mode: bool = False,
+    team_mode: bool = False,
+    team_default_mode: str = "engine",
     max_moves: int = 0,
     resume: bool = True,
 ) -> int:
-    log.info("run_game start: play_white=%s, arm_ip=%s, serial_port=%s", play_white, ARM_IP, SERIAL_PORT)
-    arm = ArmController()
+    log.info(
+        "run_game start: play_white=%s hand_mode=%s arm_ip=%s serial_port=%s",
+        play_white,
+        hand_mode,
+        ARM_IP,
+        SERIAL_PORT,
+    )
+    arm: Optional[ArmController] = ArmController()
     perception = PerceptionSystem()
     stats = RuntimeStats()
     promotions = PromotionTracker()
@@ -841,6 +946,9 @@ def run_game(
             "play_white": play_white,
             "manual_mode": manual_mode,
             "human_mode": human_mode,
+            "hand_mode": hand_mode,
+            "team_mode": team_mode,
+            "team_default_mode": team_default_mode,
             "max_moves": max_moves,
             "next_action": next_action,
             "board": board_state.tolist(),
@@ -854,14 +962,16 @@ def run_game(
         }
         _checkpoint_write(payload)
 
-    if not arm.check_connection():
-        log.error("arm preflight failed")
-        arm.close()
-        return 2
+    if arm is not None:
+        if not arm.check_connection():
+            log.error("arm preflight failed")
+            arm.close()
+            return 2
 
     if not perception.start_background():
         log.error("camera connection failed")
-        arm.close()
+        if arm is not None:
+            arm.close()
         return 2
 
     board = None
@@ -878,6 +988,15 @@ def run_game(
             loaded_checkpoint = None
         elif bool(loaded_checkpoint.get("human_mode", human_mode)) != human_mode:
             log.warning("checkpoint human-mode mismatch; ignoring checkpoint")
+            loaded_checkpoint = None
+        elif bool(loaded_checkpoint.get("hand_mode", hand_mode)) != hand_mode:
+            log.warning("checkpoint hand-mode mismatch; ignoring checkpoint")
+            loaded_checkpoint = None
+        elif bool(loaded_checkpoint.get("team_mode", team_mode)) != team_mode:
+            log.warning("checkpoint team-mode mismatch; ignoring checkpoint")
+            loaded_checkpoint = None
+        elif str(loaded_checkpoint.get("team_default_mode", team_default_mode)) != team_default_mode:
+            log.warning("checkpoint team-default mismatch; ignoring checkpoint")
             loaded_checkpoint = None
 
     if loaded_checkpoint is not None:
@@ -918,7 +1037,8 @@ def run_game(
         if board is None:
             log.error("could not read stable initial board")
             perception.close()
-            arm.close()
+            if arm is not None:
+                arm.close()
             return 2
 
     if not _is_board_plausible(board):
@@ -929,7 +1049,8 @@ def run_game(
         else:
             log.error("initial board remained implausible")
             perception.close()
-            arm.close()
+            if arm is not None:
+                arm.close()
             return 2
 
     board = promotions.apply(board)
@@ -956,7 +1077,18 @@ def run_game(
                 board_state_digest(board),
             )
             if next_action == "wait_opponent":
-                changed = _wait_and_accept_opponent_board(perception, board, manual_mode, stats, promotions)
+                if hand_mode:
+                    changed = _wait_and_accept_board_for_side(
+                        perception,
+                        board,
+                        manual_mode,
+                        stats,
+                        promotions,
+                        play_white_side=(not play_white),
+                        actor_label="opponent",
+                    )
+                else:
+                    changed = _wait_and_accept_opponent_board(perception, board, manual_mode, stats, promotions)
                 if changed is None:
                     log.error("timeout waiting for opponent move")
                     break
@@ -971,20 +1103,56 @@ def run_game(
 
             my_board = board
 
+            active_our_mode = "human" if human_mode else "engine"
+            if hand_mode and not team_mode:
+                # Auto-alternate our side without prompts: bot first, then hand, then bot...
+                active_our_mode = "engine" if (stats.move_count % 2 == 0) else "hand"
+            if team_mode:
+                active_our_mode = _prompt_our_turn_mode(team_default_mode)
+                log.info("team mode selected our source: %s", active_our_mode)
+            elif hand_mode and not team_mode:
+                log.info("hand mode auto source: %s (our_move_index=%d)", active_our_mode, stats.move_count)
+
+            if active_our_mode == "hand":
+                changed = _wait_and_accept_board_for_side(
+                    perception,
+                    board,
+                    manual_mode,
+                    stats,
+                    promotions,
+                    play_white_side=play_white,
+                    actor_label="our",
+                )
+                if changed is None:
+                    log.error("timeout waiting for our hand move")
+                    break
+
+                board = changed
+                stats.move_count += 1
+                loop_elapsed = time.monotonic() - loop_t0
+                stats.total_loop_time_s += loop_elapsed
+                log.info("hand move accepted; loop iteration time: %.3fs", loop_elapsed)
+                if _is_game_over(board):
+                    clear_checkpoint_on_exit = True
+                    break
+                next_action = "wait_opponent"
+                save_checkpoint(board, white_grave_idx, black_grave_idx, next_action)
+                continue
+
             think_t0 = time.monotonic()
-            if human_mode:
+            if active_our_mode == "human":
                 move_str, used_fallback = request_human_move(my_board, play_white)
             else:
                 move_str, used_fallback = request_engine_move(my_board, play_white)
             think_elapsed = time.monotonic() - think_t0
-            if human_mode:
+            if active_our_mode == "human":
                 log.info("human input time: %.3fs", think_elapsed)
             else:
                 log.info("engine think time: %.3fs", think_elapsed)
             stats.total_think_time_s += think_elapsed
             if not move_str:
                 stats.invalid_moves += 1
-                if human_mode:
+                if active_our_mode == "human":
                     log.error("human failed to provide a valid move")
                 else:
                     log.error("engine failed to provide a valid move")
@@ -1006,6 +1174,9 @@ def run_game(
 
             speed = choose_move_speed(stats.move_count, think_elapsed)
             log.info("engine move %d: %s | speed=%d", stats.move_count + 1, move_str, speed)
+            if arm is None:
+                log.error("arm unavailable while robot execution path is active")
+                break
             expected, white_grave_idx, black_grave_idx, ok = execute_move(
                 arm,
                 board,
@@ -1066,17 +1237,19 @@ def run_game(
         log.exception("unhandled exception in run_game: %s", exc)
         return 3
     finally:
-        arm.arm_home()
+        if arm is not None:
+            arm.arm_home()
         perception.close()
-        arm.close()
+        if arm is not None:
+            arm.close()
         if clear_checkpoint_on_exit:
             _checkpoint_clear()
             log.info("checkpoint cleared after clean stop")
         log.info(
             "run_game cleanup done | commands=%d serial_fallbacks=%d feedback_failures=%d moves=%d recoveries=%d invalid_moves=%d retries=%d fallback_moves=%d opponent_rejects=%d camera_recovers=%d verify_failures=%d avg_think=%.3fs avg_loop=%.3fs",
-            arm.command_counter,
-            arm.serial_fallback_count,
-            arm.feedback_failures,
+            0 if arm is None else arm.command_counter,
+            0 if arm is None else arm.serial_fallback_count,
+            0 if arm is None else arm.feedback_failures,
             stats.move_count,
             stats.recoveries,
             stats.invalid_moves,
@@ -1100,6 +1273,9 @@ def main() -> int:
     parser.add_argument("--calibrate", action="store_true", help="run calibration wizard")
     parser.add_argument("--manual", action="store_true", help="manual opponent move trigger")
     parser.add_argument("--human", action="store_true", help="use human move input for our side")
+    parser.add_argument("--hand", action="store_true", help="our side auto-alternates bot then hand each turn (no prompts)")
+    parser.add_argument("--team", action="store_true", help="team mode: choose our source each turn (engine/human/hand)")
+    parser.add_argument("--team-default", choices=["engine", "human", "hand"], default="engine", help="default source used on Enter in --team mode")
     parser.add_argument("--max-moves", type=int, default=0, help="stop after N of our own moves (0=unlimited)")
     parser.add_argument("--fresh", action="store_true", help="ignore and clear saved checkpoint before starting")
     parser.add_argument("--no-resume", action="store_true", help="run without loading checkpoint")
@@ -1109,12 +1285,15 @@ def main() -> int:
 
     setup_logging(debug=args.debug, log_file=args.log_file or None)
     log.info(
-        "main args: white=%s black=%s calibrate=%s manual=%s human=%s max_moves=%d fresh=%s no_resume=%s debug=%s",
+        "main args: white=%s black=%s calibrate=%s manual=%s human=%s hand=%s team=%s team_default=%s max_moves=%d fresh=%s no_resume=%s debug=%s",
         args.white,
         args.black,
         args.calibrate,
         args.manual,
         args.human,
+        args.hand,
+        args.team,
+        args.team_default,
         args.max_moves,
         args.fresh,
         args.no_resume,
@@ -1128,13 +1307,26 @@ def main() -> int:
     if not args.white and not args.black:
         args.white = True
 
-    arm = ArmController()
+    if args.human and args.hand:
+        log.error("--human and --hand cannot be used together")
+        return 2
+    if args.hand and args.team:
+        log.error("--hand and --team cannot be used together; use --team --team-default hand")
+        return 2
+
+    team_default = args.team_default
+    if args.team and args.human and args.team_default == "engine":
+        team_default = "human"
+        log.info("team mode default set to human because --human was provided")
+
+    arm: Optional[ArmController] = None
     try:
         if args.calibrate:
+            arm = ArmController()
             calibration_wizard(arm)
             return 0
     finally:
-        if args.calibrate:
+        if args.calibrate and arm is not None:
             arm.close()
 
     def _sigint_handler(sig_num, frame):
@@ -1150,6 +1342,9 @@ def main() -> int:
         play_white=args.white,
         manual_mode=args.manual,
         human_mode=args.human,
+        hand_mode=args.hand,
+        team_mode=args.team,
+        team_default_mode=team_default,
         max_moves=max(0, args.max_moves),
         resume=resume_enabled,
         )
