@@ -16,6 +16,7 @@ ARM_PORT = int(os.getenv("ROBO_ARM_PORT", "80"))
 ARM_BASE_URL = f"http://{ARM_IP}:{ARM_PORT}"
 
 SERIAL_PORT = os.getenv("ROBO_SERIAL_PORT", "/dev/ttyUSB0")
+SERIAL_PORT = os.getenv("ROBO_SERIAL_PORT", "/dev/ttyUSB0")
 BAUD_RATE = int(os.getenv("ROBO_BAUD", "115200"))
 SERIAL_TIMEOUT = float(os.getenv("ROBO_SERIAL_TIMEOUT", "1.0"))
 
