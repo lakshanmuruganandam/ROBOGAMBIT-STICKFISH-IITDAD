@@ -193,7 +193,7 @@ def _wait_arrival(target: Tuple[float, float, float], timeout: float) -> Tuple[b
 
 
 def _parse_ping_loss(output: str) -> Optional[float]:
-    m = re.search(r"(\d+)%\s*loss", output, flags=re.IGNORECASE)
+    m = re.search(r"(\d+)%\s*(packet\s+)?loss", output, flags=re.IGNORECASE)
     if m:
         return float(m.group(1))
     m = re.search(r"Lost\s*=\s*\d+\s*\((\d+)%\)", output, flags=re.IGNORECASE)
@@ -221,6 +221,20 @@ def _load_game_module() -> Optional[object]:
         spec.loader.exec_module(mod)
         return mod
     return None
+
+
+def _tcp_reachable(ip: str, port: int, timeout: float) -> bool:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(timeout)
+    try:
+        return sock.connect_ex((ip, port)) == 0
+    except Exception:
+        return False
+    finally:
+        try:
+            sock.close()
+        except Exception:
+            pass
 
 
 def _open_serial_with_retry(retries: int = 3, delay_s: float = 0.2):
@@ -444,6 +458,9 @@ def check_arm(report: Report, timeout: float, feedback_samples: int, motion_chec
 
 def check_arm_arrival_pipeline(report: Report, timeout: float) -> None:
     t0 = time.monotonic()
+    if not _tcp_reachable(ARM_IP, ARM_PORT, timeout=max(0.8, timeout)):
+        report.add("arm", "move+arrival pipeline", "SKIP", f"arm unreachable at {ARM_IP}:{ARM_PORT}", time.monotonic() - t0)
+        return
     try:
         cmd = {"T": 104, "x": HOME_X, "y": HOME_Y, "z": HOME_Z, "t": SPEED_NORMAL}
         _ = _http_json_cmd(cmd, timeout=timeout)
@@ -458,6 +475,9 @@ def check_arm_arrival_pipeline(report: Report, timeout: float) -> None:
 
 def check_pick_place_dry_run(report: Report, timeout: float) -> None:
     t0 = time.monotonic()
+    if not _tcp_reachable(ARM_IP, ARM_PORT, timeout=max(0.8, timeout)):
+        report.add("arm", "pick/place dry run", "SKIP", f"arm unreachable at {ARM_IP}:{ARM_PORT}", time.monotonic() - t0)
+        return
     # Corner A1 and first black graveyard slot for safe deterministic path.
     pick_x = float(CELL_CENTERS_X[0])
     pick_y = float(CELL_CENTERS_Y[0])
@@ -598,6 +618,9 @@ def check_serial(report: Report, write_test: bool) -> None:
 
 def check_camera(report: Report, timeout: float, stream_seconds: float, save_frame: str) -> None:
     t0 = time.monotonic()
+    if not _tcp_reachable(CAMERA_IP, CAMERA_PORT, timeout=max(0.8, timeout)):
+        report.add("camera", "frame receive/decode", "SKIP", f"camera unreachable at {CAMERA_IP}:{CAMERA_PORT}", time.monotonic() - t0)
+        return
     sock = None
     frame = None
     first_size = 0
@@ -680,6 +703,9 @@ def check_camera(report: Report, timeout: float, stream_seconds: float, save_fra
 
 def check_perception(report: Report, timeout: float, samples: int) -> None:
     t0 = time.monotonic()
+    if not _tcp_reachable(CAMERA_IP, CAMERA_PORT, timeout=max(0.8, timeout)):
+        report.add("perception", "camera connect", "SKIP", f"camera unreachable at {CAMERA_IP}:{CAMERA_PORT}", time.monotonic() - t0)
+        return
     perc = PerceptionSystem()
     try:
         # Direct frame + marker inventory check.

@@ -15,12 +15,12 @@ ARM_IP = os.getenv("ROBO_ARM_IP", "192.168.4.1")
 ARM_PORT = int(os.getenv("ROBO_ARM_PORT", "80"))
 ARM_BASE_URL = f"http://{ARM_IP}:{ARM_PORT}"
 
-SERIAL_PORT = os.getenv("ROBO_SERIAL_PORT", "COM3")
+SERIAL_PORT = os.getenv("ROBO_SERIAL_PORT", "/dev/ttyUSB0")
 BAUD_RATE = int(os.getenv("ROBO_BAUD", "115200"))
 SERIAL_TIMEOUT = float(os.getenv("ROBO_SERIAL_TIMEOUT", "1.0"))
 
 CAMERA_IP = os.getenv("ROBO_CAMERA_IP", "192.168.4.6")
-CAMERA_PORT = int(os.getenv("ROBO_CAMERA_PORT", "9999"))
+CAMERA_PORT = int(os.getenv("ROBO_CAMERA_PORT", "9994"))
 CAMERA_CONNECT_TIMEOUT = float(os.getenv("ROBO_CAMERA_CONNECT_TIMEOUT", "8.0"))
 CAMERA_RECV_TIMEOUT = float(os.getenv("ROBO_CAMERA_RECV_TIMEOUT", "8.0"))
 
