@@ -35,6 +35,7 @@ TOP_LEFT_X  = 180
 TOP_LEFT_Y  = 180
 BOARD_SIZE  = 6
 PIECE_IDS   = set(range(1, 11))
+CELL_THRESHOLD_MM = 60.0
 
 class BoardPerception:
     def __init__(self, connect_socket=True):
@@ -50,6 +51,10 @@ class BoardPerception:
         params.polygonalApproxAccuracyRate = 0.03
         params.minCornerDistanceRate       = 0.05
         params.minDistanceToBorder         = 1
+        params.cornerRefinementWinSize     = 5
+        params.cornerRefinementMaxIterations = 30
+        params.cornerRefinementMinAccuracy = 0.1
+        params.adaptiveThreshConstant      = 7
         self.detector = aruco.ArucoDetector(aruco_dict, params)
 
         self.H_matrix      = None
@@ -94,6 +99,36 @@ class BoardPerception:
         """Map image pixel coordinates into board-world coordinates."""
         pt = cv2.perspectiveTransform(np.array([[[px, py]]], dtype=np.float32), self.H_matrix)
         return float(pt[0][0][0]), float(pt[0][0][1])
+
+    def _detect_markers_best(self, frame):
+        """Run marker detection on multiple image variants and keep best result."""
+        und = cv2.undistort(frame, CAMERA_MATRIX, DIST_COEFFS, None, CAMERA_MATRIX)
+        gray = cv2.cvtColor(und, cv2.COLOR_BGR2GRAY)
+
+        variants = [
+            gray,
+            cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray),
+            cv2.adaptiveThreshold(
+                gray,
+                255,
+                cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                cv2.THRESH_BINARY,
+                11,
+                2,
+            ),
+        ]
+
+        best_corners = None
+        best_ids = None
+        best_count = -1
+        for img in variants:
+            corners, ids, _ = self.detector.detectMarkers(img)
+            count = 0 if ids is None else int(len(ids))
+            if count > best_count:
+                best_count = count
+                best_corners = corners
+                best_ids = ids
+        return best_corners, best_ids
 
     def _world_to_cell(self, wx, wy):
         """Snap world coordinates to nearest board cell and report distance."""
@@ -157,8 +192,7 @@ class BoardPerception:
 
     def get_latest_state_from_frame(self, frame):
         """Processes a single provided frame to extract board state and poses."""
-        gray  = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        corners, ids, _ = self.detector.detectMarkers(gray)
+        corners, ids = self._detect_markers_best(frame)
 
         board = np.zeros((BOARD_SIZE, BOARD_SIZE), dtype=int)
         poses = {}
@@ -197,7 +231,7 @@ class BoardPerception:
                     if row is None:
                         continue
                     # Reject far-off snaps that likely come from transient noise.
-                    if dist > (SQUARE_SIZE * 0.95):
+                    if dist > CELL_THRESHOLD_MM:
                         continue
                     prev = cell_best.get((row, col))
                     if prev is None or dist < prev[0]:
