@@ -303,6 +303,7 @@ def _build_fix_playbook(
     arm_tcp_ok: bool,
     arm_http_ok: bool,
     cam_route_loopback: bool,
+    camera_target_is_localhost: bool,
     cam_route_dev: Optional[str],
     cam_route_src: Optional[str],
     cam_tcp_ok: bool,
@@ -319,11 +320,11 @@ def _build_fix_playbook(
     if arm_tcp_ok and not arm_http_ok:
         steps.append("Arm TCP works but HTTP fails: check arm web service readiness on port 80.")
 
-    if cam_route_loopback:
+    if cam_route_loopback and not camera_target_is_localhost:
         steps.append("Camera route is loopback: configured camera IP points to local machine; set ROBO_CAMERA_IP to actual camera host.")
-    if cam_route_src and cam_route_src == configured_camera_ip:
+    if (not camera_target_is_localhost) and cam_route_src and cam_route_src == configured_camera_ip:
         steps.append("Camera IP equals local source IP: this is typically misconfiguration; choose camera device IP, not laptop IP.")
-    if cam_route_dev and cam_route_dev == "lo":
+    if (not camera_target_is_localhost) and cam_route_dev and cam_route_dev == "lo":
         steps.append("Camera route uses loopback interface: clear wrong static route or wrong /etc/hosts mapping on remote machine.")
 
     if not cam_tcp_ok:
@@ -399,9 +400,14 @@ def main() -> int:
     route_src = _parse_route_src(route_out)
     route_dev = _parse_route_dev(route_out)
     cam_route_loopback = _is_loopback_route(route_out)
+    camera_target_is_localhost = args.camera_ip in {"127.0.0.1", "localhost"}
     if cam_route_loopback:
-        checks.append(CheckRow("camera route", "FAIL", f"loopback route detected: {route_out}", 0.0))
-        notes.append("Camera IP resolves to local loopback. Change ROBO_CAMERA_IP to actual camera device IP.")
+        if camera_target_is_localhost:
+            checks.append(CheckRow("camera route", "WARN", f"local mode route: {route_out}", 0.0))
+            notes.append("Camera target is localhost; this is valid only if camera streamer runs on same machine.")
+        else:
+            checks.append(CheckRow("camera route", "FAIL", f"loopback route detected: {route_out}", 0.0))
+            notes.append("Camera IP resolves to local loopback. Change ROBO_CAMERA_IP to actual camera device IP.")
     else:
         checks.append(CheckRow("camera route", "PASS", f"route={route_out or 'unknown'}", 0.0))
         if route_src and route_src == args.camera_ip:
@@ -504,6 +510,7 @@ def main() -> int:
         arm_tcp_ok=arm_tcp_ok,
         arm_http_ok=arm_http_ok,
         cam_route_loopback=cam_route_loopback,
+        camera_target_is_localhost=camera_target_is_localhost,
         cam_route_dev=route_dev,
         cam_route_src=route_src,
         cam_tcp_ok=cam_tcp_ok,
