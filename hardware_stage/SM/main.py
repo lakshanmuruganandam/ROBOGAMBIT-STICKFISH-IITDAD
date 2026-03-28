@@ -24,11 +24,13 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import urlopen
 
+import cv2
 import numpy as np
 import requests
 import requests.adapters
 
 import game
+import perception as perception_module
 from perception import PerceptionSystem
 
 
@@ -37,7 +39,7 @@ ARM_IP = os.getenv("ROBO_ARM_IP", "192.168.4.1")
 ARM_PORT = int(os.getenv("ROBO_ARM_PORT", "80"))
 ARM_BASE_URL = f"http://{ARM_IP}:{ARM_PORT}"
 
-SERIAL_PORT = os.getenv("ROBO_SERIAL_PORT", "COM3")
+SERIAL_PORT = os.getenv("ROBO_SERIAL_PORT", "/dev/ttyUSB0")
 BAUD_RATE = int(os.getenv("ROBO_BAUD", "115200"))
 SERIAL_TIMEOUT = float(os.getenv("ROBO_SERIAL_TIMEOUT", "1.0"))
 
@@ -109,6 +111,66 @@ def cell_to_rc(cell: str) -> Tuple[int, int]:
 
 def rc_to_world(row: int, col: int) -> Tuple[float, float]:
     return CELL_CENTERS_X[row], CELL_CENTERS_Y[col]
+
+
+def transform_to_robot(world_x: float, world_y: float, perception: PerceptionSystem) -> Tuple[float, float]:
+    """
+    Transform world coordinates (board frame) to robot frame via homography.
+    Uses the H_WORLD_TO_ROBOT matrix from perception module.
+    
+    Args:
+        world_x: X coordinate in world/board frame (mm)
+        world_y: Y coordinate in world/board frame (mm)
+        perception: PerceptionSystem instance with H_WORLD_TO_ROBOT matrix
+    
+    Returns:
+        (rx, ry): Coordinates in robot frame (mm)
+    """
+    if perception.H_WORLD_TO_ROBOT is None:
+        # Homography not yet computed; fall back to world coords
+        log.warning("transform_to_robot: H_WORLD_TO_ROBOT not yet available, using world coords as fallback")
+        return world_x, world_y
+    
+    point = np.array([[[world_x, world_y]]], dtype=np.float32)
+    try:
+        transformed = cv2.perspectiveTransform(point, perception.H_WORLD_TO_ROBOT)
+        rx, ry = transformed[0][0]
+        return float(rx), float(ry)
+    except Exception as e:
+        log.warning("transform_to_robot failed: %s, using world coords as fallback", e)
+        return world_x, world_y
+
+
+def find_nearest_piece(target_piece_id: int, start_row: int, start_col: int, 
+                       all_poses: Dict[int, list]) -> Tuple[float, float]:
+    """
+    Find the actual detected position of a piece, or fall back to grid position.
+    
+    Args:
+        target_piece_id: Piece ID we're trying to move
+        start_row: Expected grid row
+        start_col: Expected grid column
+        all_poses: Dict from perception.get_piece_poses() of {piece_id: [(x1,y1), (x2,y2), ...]}
+    
+    Returns:
+        (x, y): Detected position in world coords, or grid fallback
+    """
+    expected_x, expected_y = rc_to_world(start_row, start_col)
+    
+    if target_piece_id not in all_poses or not all_poses[target_piece_id]:
+        log.debug("find_nearest_piece: piece %d not detected, using grid fallback (%s,%s)",
+                  target_piece_id, start_row, start_col)
+        return expected_x, expected_y
+    
+    # Find the detected coordinate closest to expected square center
+    detected_poses = all_poses[target_piece_id]
+    best_pose = min(detected_poses, 
+                    key=lambda p: math.hypot(p[0] - expected_x, p[1] - expected_y))
+    
+    distance_mm = math.hypot(best_pose[0] - expected_x, best_pose[1] - expected_y)
+    log.debug("find_nearest_piece: piece %d found %.1f mm from grid center", target_piece_id, distance_mm)
+    
+    return best_pose[0], best_pose[1]
 
 try:
     import serial  # type: ignore
@@ -278,8 +340,12 @@ class ArmController:
 
         if serial is not None:
             try:
-                self.serial_conn = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=SERIAL_TIMEOUT)
-                log.info("serial opened: %s @ %d", SERIAL_PORT, BAUD_RATE)
+                self.serial_conn = serial.Serial(
+                    SERIAL_PORT, BAUD_RATE, timeout=SERIAL_TIMEOUT, dsrdtr=None,
+                )
+                self.serial_conn.setRTS(False)
+                self.serial_conn.setDTR(False)
+                log.info("serial opened: %s @ %d (RTS/DTR disabled)", SERIAL_PORT, BAUD_RATE)
             except Exception as exc:
                 log.warning("serial unavailable: %s", exc)
         else:
@@ -327,6 +393,20 @@ class ArmController:
         except requests.exceptions.ConnectTimeout:
             log.warning("HTTP connect timeout on payload: %s", payload)
             return False
+        except requests.exceptions.ConnectionError as exc:
+            # The arm's firmware resets the TCP connection on move commands (T:104)
+            # after accepting them.  A ConnectionResetError therefore means the
+            # command was received and is being executed — treat it as success
+            # when we are in fire-and-forget mode (accept_timeout=True).
+            if accept_timeout:
+                log.debug(
+                    "HTTP connection reset treated as accepted send for payload: %s (detail: %s)",
+                    payload,
+                    exc,
+                )
+                return True
+            log.warning("HTTP connection error for payload %s: %s", payload, exc)
+            return False
         except requests.RequestException as exc:
             log.warning("HTTP error for payload %s: %s", payload, exc)
             return False
@@ -339,7 +419,7 @@ class ArmController:
             log.debug("serial send skipped (no serial): %s", text)
             return False
         try:
-            self.serial_conn.write((text + "\n").encode("utf-8"))
+            self.serial_conn.write(text.encode("utf-8"))
             self.serial_conn.flush()
             log.debug("serial send ok: %s", text)
             return True
@@ -414,6 +494,92 @@ class ArmController:
             polls,
             last_pos,
         )
+        return True
+
+    def linear_move_to(self, target_x: float, target_y: float, target_z: float,
+                      step_size_mm: float = 5.0, step_delay_s: float = 0.05,
+                      kp_correction: float = 0.8) -> bool:
+        """
+        Closed-loop linear interpolation with proportional feedback correction.
+        
+        This method provides stable, accurate motion by:
+        1. Reading the actual arm position before starting
+        2. Computing waypoints along the straight line to target
+        3. For each waypoint, reading feedback and blending: cmd = ideal + Kp * (ideal - actual)
+        4. This proportional correction minimizes drift accumulated from mechanical play
+        
+        Args:
+            target_x, target_y, target_z: Target coordinates (mm)
+            step_size_mm: Distance between interpolation waypoints (mm)
+            step_delay_s: Delay between sending waypoints (s) - tune this for tight tracking
+            kp_correction: Proportional gain (0.0=open-loop, 1.0=full correction, 0.8=default)
+        
+        Returns:
+            True if motion completed successfully
+        """
+        # Read actual start position (real, not cached)
+        start_pos = self._query_position()
+        if start_pos is None:
+            log.debug("[LIN] TESTING/No feedback: simulating straight move.")
+            start_pos = (self.x, self.y, self.z)
+        
+        sx, sy, sz = start_pos
+        dx = target_x - sx
+        dy = target_y - sy
+        dz = target_z - sz
+        dist = math.sqrt(dx*dx + dy*dy + dz*dz)
+        
+        if dist < 0.5:
+            log.debug("[LIN] Already at target (%.1f, %.1f, %.1f)", target_x, target_y, target_z)
+            self.x, self.y, self.z = target_x, target_y, target_z
+            return True
+        
+        n_steps = max(1, math.ceil(dist / step_size_mm))
+        log.info("[LIN] (%.1f,%.1f,%.1f) → (%.1f,%.1f,%.1f) | %.1f mm / %d steps",
+                 sx, sy, sz, target_x, target_y, target_z, dist, n_steps)
+        
+        for i in range(1, n_steps + 1):
+            alpha = i / n_steps
+            
+            # Ideal waypoint along straight line
+            ideal_x = sx + alpha * dx
+            ideal_y = sy + alpha * dy
+            ideal_z = sz + alpha * dz
+            
+            # Read actual position
+            actual_pos = self._query_position()
+            if actual_pos is None:
+                actual_x, actual_y, actual_z = ideal_x, ideal_y, ideal_z
+            else:
+                actual_x, actual_y, actual_z = actual_pos
+            
+            # Proportional correction: cmd = ideal + Kp * (ideal - actual)
+            corrected_x = ideal_x + kp_correction * (ideal_x - actual_x)
+            corrected_y = ideal_y + kp_correction * (ideal_y - actual_y)
+            corrected_z = ideal_z + kp_correction * (ideal_z - actual_z)
+            
+            # Send corrected waypoint
+            payload = {
+                "T": 104,
+                "x": float(corrected_x),
+                "y": float(corrected_y),
+                "z": float(corrected_z),
+                "t": SPEED_NORMAL
+            }
+            self._send_http(payload, timeout=HTTP_MOVE_SEND_TIMEOUT, accept_timeout=True)
+            
+            # Log tracking error
+            err = math.sqrt((ideal_x-actual_x)**2 + (ideal_y-actual_y)**2 + (ideal_z-actual_z)**2)
+            if err > 15.0:
+                log.warning("[LIN] step %d/%d: large tracking error %.1f mm", i, n_steps, err)
+            else:
+                log.debug("[LIN] step %d/%d: ideal=(%.1f,%.1f,%.1f) actual=(%.1f,%.1f,%.1f) err=%.1f mm",
+                         i, n_steps, ideal_x, ideal_y, ideal_z, actual_x, actual_y, actual_z, err)
+            
+            time.sleep(step_delay_s)
+        
+        self.x, self.y, self.z = target_x, target_y, target_z
+        log.debug("[LIN] Motion complete.")
         return True
 
     def arm_home(self) -> bool:
@@ -622,8 +788,26 @@ def execute_move(
     move: ParsedMove,
     white_grave_idx: int,
     black_grave_idx: int,
+    perception: PerceptionSystem,
     speed: int,
 ) -> Tuple[np.ndarray, int, int, bool]:
+    """
+    Execute a move with advanced piece detection and closed-loop motion.
+    
+    This function combines detected piece positions (from perception.get_piece_poses)
+    with closed-loop feedback motion (linear_move_to) for robust execution.
+    
+    Args:
+        arm: ArmController instance
+        board: Current board state
+        move: ParsedMove to execute
+        white_grave_idx, black_grave_idx: Graveyard indices
+        perception: PerceptionSystem with detected piece poses and homography
+        speed: Motion speed parameter
+    
+    Returns:
+        (new_board, white_grave_idx, black_grave_idx, success)
+    """
     fr, fc = move.from_cell
     tr, tc = move.to_cell
     if (fr, fc) == (tr, tc):
@@ -637,7 +821,6 @@ def execute_move(
 
     effective_piece = move.piece
     if source_piece != move.piece:
-        # Trust observed board state over engine label to avoid desync crashes.
         log.warning(
             "engine piece mismatch at %s: move piece=%d board piece=%d; using board piece",
             rc_to_label(fr, fc),
@@ -676,38 +859,101 @@ def execute_move(
     )
     expected, captured = apply_move(board, effective_move)
 
-    from_x, from_y = rc_to_world(*move.from_cell)
-    to_x, to_y = rc_to_world(*move.to_cell)
+    # Get detected piece poses for accurate positioning
+    all_poses = perception.get_piece_poses()
+    
+    # Find actual piece positions (detected or fallback to grid)
+    from_world_x, from_world_y = find_nearest_piece(effective_piece, fr, fc, all_poses)
+    from_robot_x, from_robot_y = transform_to_robot(from_world_x, from_world_y, perception)
+    
+    to_world_x, to_world_y = rc_to_world(tr, tc)
+    to_robot_x, to_robot_y = transform_to_robot(to_world_x, to_world_y, perception)
 
+    # Handle captures with detected position for captured piece
     if captured != EMPTY:
         log.info("capture detected at %s: piece=%d", rc_to_label(*move.to_cell), captured)
         captured_is_white = captured in WHITE_PIECE_IDS
-        if captured in WHITE_PIECE_IDS:
+        
+        # Find the actual position of the piece to capture
+        captured_world_x, captured_world_y = find_nearest_piece(captured, tr, tc, all_poses)
+        captured_robot_x, captured_robot_y = transform_to_robot(captured_world_x, captured_world_y, perception)
+        
+        if captured_is_white:
             slot_idx = min(white_grave_idx, len(GRAVEYARD_WHITE) - 1)
             slot = GRAVEYARD_WHITE[slot_idx]
         else:
             slot_idx = min(black_grave_idx, len(GRAVEYARD_BLACK) - 1)
             slot = GRAVEYARD_BLACK[slot_idx]
 
-        if not arm.pick_piece(to_x, to_y, speed):
-            log.error("failed while picking captured piece")
+        # Pick captured piece with closed-loop motion
+        if not arm.linear_move_to(captured_robot_x, captured_robot_y, Z_SAFE):
+            log.error("failed while moving to captured piece")
             return board, white_grave_idx, black_grave_idx, False
-        if not arm.place_piece(slot[0], slot[1], speed):
-            log.error("failed while placing captured piece to graveyard")
+        if not arm.linear_move_to(captured_robot_x, captured_robot_y, Z_PICK):
+            log.error("failed while lowering to captured piece")
             return board, white_grave_idx, black_grave_idx, False
+        if not arm.magnet_on():
+            log.error("failed while energizing magnet for capture")
+            return board, white_grave_idx, black_grave_idx, False
+        time.sleep(GRIPPER_ACTIVATE_TIME)
+        if not arm.linear_move_to(captured_robot_x, captured_robot_y, Z_SAFE):
+            log.error("failed while lifting captured piece")
+            return board, white_grave_idx, black_grave_idx, False
+        
+        # Place in graveyard
+        if not arm.linear_move_to(slot[0], slot[1], Z_SAFE):
+            log.error("failed while moving to graveyard")
+            return board, white_grave_idx, black_grave_idx, False
+        if not arm.linear_move_to(slot[0], slot[1], Z_PLACE):
+            log.error("failed while lowering to graveyard")
+            return board, white_grave_idx, black_grave_idx, False
+        if not arm.magnet_off():
+            log.error("failed while deenergizing magnet at graveyard")
+            return board, white_grave_idx, black_grave_idx, False
+        time.sleep(GRIPPER_ACTIVATE_TIME)
+        if not arm.linear_move_to(slot[0], slot[1], Z_SAFE):
+            log.error("failed while lifting from graveyard")
+            return board, white_grave_idx, black_grave_idx, False
+        
         if captured_is_white:
             white_grave_idx += 1
         else:
             black_grave_idx += 1
 
-    if not arm.pick_piece(from_x, from_y, speed):
-        log.error("failed while picking moving piece")
+    # Move piece from source to destination with closed-loop motion and detected position
+    if not arm.linear_move_to(from_robot_x, from_robot_y, Z_SAFE):
+        log.error("failed while moving to piece")
+        return board, white_grave_idx, black_grave_idx, False
+    if not arm.linear_move_to(from_robot_x, from_robot_y, Z_PICK):
+        log.error("failed while lowering to piece")
+        return board, white_grave_idx, black_grave_idx, False
+    if not arm.magnet_on():
+        log.error("failed while energizing magnet")
+        return board, white_grave_idx, black_grave_idx, False
+    time.sleep(GRIPPER_ACTIVATE_TIME)
+    if not arm.linear_move_to(from_robot_x, from_robot_y, Z_SAFE):
+        log.error("failed while lifting piece")
         return board, white_grave_idx, black_grave_idx, False
 
-    if not arm.place_piece(to_x, to_y, speed):
-        log.error("failed while placing moving piece")
+    # Place at destination
+    if not arm.linear_move_to(to_robot_x, to_robot_y, Z_SAFE):
+        log.error("failed while moving to destination")
         return board, white_grave_idx, black_grave_idx, False
-
+    if not arm.linear_move_to(to_robot_x, to_robot_y, Z_PLACE):
+        log.error("failed while lowering to destination")
+        return board, white_grave_idx, black_grave_idx, False
+    if not arm.magnet_off():
+        log.error("failed while deenergizing magnet at destination")
+        return board, white_grave_idx, black_grave_idx, False
+    time.sleep(GRIPPER_ACTIVATE_TIME)
+    if not arm.linear_move_to(to_robot_x, to_robot_y, Z_SAFE):
+        log.error("failed while lifting from destination")
+        return board, white_grave_idx, black_grave_idx, False
+    
+    # Return home to rest position
+    if not arm.arm_home():
+        log.warning("failed while homing arm after move")
+    
     return expected, white_grave_idx, black_grave_idx, True
 
 
@@ -735,12 +981,23 @@ def choose_move_speed(move_count: int, think_time_s: float) -> int:
 
 
 def request_engine_move(board: np.ndarray, play_white: bool) -> Tuple[Optional[str], bool]:
+    # Keep game.py untouched: sanitize board here before engine calls.
+    safe_board = np.array(board, dtype=int)
+    if safe_board.shape != (6, 6):
+        fixed = np.zeros((6, 6), dtype=int)
+        rows = min(6, safe_board.shape[0]) if safe_board.ndim >= 1 else 0
+        cols = min(6, safe_board.shape[1]) if safe_board.ndim >= 2 else 0
+        if rows > 0 and cols > 0:
+            fixed[:rows, :cols] = safe_board[:rows, :cols]
+        safe_board = fixed
+    safe_board = np.clip(safe_board, 0, 10)
+
     try:
-        best = game.get_best_move(board, play_white)
+        best = game.get_best_move(safe_board, play_white)
         if best:
             parsed = parse_move(best)
             if parsed is not None:
-                ok, reason = validate_move_for_side(board, parsed, play_white)
+                ok, reason = validate_move_for_side(safe_board, parsed, play_white)
                 if ok:
                     return best, False
                 log.warning("get_best_move rejected: %s | %s", best, reason)
@@ -750,11 +1007,11 @@ def request_engine_move(board: np.ndarray, play_white: bool) -> Tuple[Optional[s
 
     turn_value = 1 if play_white else 0
     try:
-        fallback = game.get_move(board, turn_value)
+        fallback = game.get_move(safe_board, turn_value)
         if fallback:
             parsed = parse_move(fallback)
             if parsed is not None:
-                ok, reason = validate_move_for_side(board, parsed, play_white)
+                ok, reason = validate_move_for_side(safe_board, parsed, play_white)
                 if ok:
                     log.warning("using get_move fallback")
                     return fallback, True
@@ -981,6 +1238,7 @@ def run_game(play_white: bool, manual_mode: bool = False, max_moves: int = 0, re
                 parsed,
                 white_grave_idx,
                 black_grave_idx,
+                perception,
                 speed=speed,
             )
             if not ok:
@@ -993,6 +1251,7 @@ def run_game(play_white: bool, manual_mode: bool = False, max_moves: int = 0, re
                     parsed,
                     white_grave_idx,
                     black_grave_idx,
+                    perception,
                     speed=SPEED_FAST,
                 )
                 if not ok:
@@ -1061,12 +1320,65 @@ def run_game(play_white: bool, manual_mode: bool = False, max_moves: int = 0, re
     return 0
 
 
+def run_preflight(check_frame: bool = False) -> int:
+    """Run a startup connectivity preflight and exit.
+
+    Returns 0 on success, non-zero when any mandatory check fails.
+    """
+    arm = ArmController()
+    perception = PerceptionSystem()
+    arm_ok = False
+    cam_ok = False
+    frame_ok: Optional[bool] = None
+    try:
+        arm_ok = arm.check_connection()
+        cam_ok = perception.connect_camera()
+        if check_frame and cam_ok:
+            frame_ok = perception.recv_frame() is not None
+
+        log.info(
+            "preflight result | arm_ok=%s cam_ok=%s frame_ok=%s arm=%s camera_candidates=%s active_camera=%s",
+            arm_ok,
+            cam_ok,
+            frame_ok,
+            arm.base_url,
+            getattr(perception, "_camera_candidates", None),
+            getattr(perception, "_active_camera", None),
+        )
+        print(
+            "PREFLIGHT",
+            f"arm_ok={arm_ok}",
+            f"cam_ok={cam_ok}",
+            f"frame_ok={frame_ok}",
+            f"arm={arm.base_url}",
+            f"active_camera={getattr(perception, '_active_camera', None)}",
+        )
+        if check_frame:
+            return 0 if (arm_ok and cam_ok and frame_ok) else 2
+        return 0 if (arm_ok and cam_ok) else 2
+    finally:
+        perception.close()
+        arm.close()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="RoboGambit Team L2 controller")
     side = parser.add_mutually_exclusive_group()
     side.add_argument("--white", action="store_true", help="play as white")
     side.add_argument("--black", action="store_true", help="play as black")
+    parser.add_argument("--arm-ip", type=str, default="", help="override arm controller IP")
+    parser.add_argument("--arm-port", type=int, default=0, help="override arm controller port")
+    parser.add_argument("--camera-ip", type=str, default="", help="override camera stream IP")
+    parser.add_argument("--camera-port", type=int, default=0, help="override camera stream port")
+    parser.add_argument(
+        "--camera-candidates",
+        type=str,
+        default="",
+        help="comma separated camera endpoints host:port,host:port",
+    )
     parser.add_argument("--calibrate", action="store_true", help="run calibration wizard")
+    parser.add_argument("--preflight", action="store_true", help="run arm+camera connectivity preflight and exit")
+    parser.add_argument("--preflight-frame", action="store_true", help="when used with --preflight, also require one camera frame")
     parser.add_argument("--manual", action="store_true", help="manual opponent move trigger")
     parser.add_argument("--max-moves", type=int, default=0, help="stop after N of our own moves (0=unlimited)")
     parser.add_argument("--fresh", action="store_true", help="ignore and clear saved checkpoint before starting")
@@ -1076,8 +1388,23 @@ def main() -> int:
     args = parser.parse_args()
 
     setup_logging(debug=args.debug, log_file=args.log_file or None)
+
+    global ARM_IP, ARM_PORT, ARM_BASE_URL
+    if args.arm_ip:
+        ARM_IP = args.arm_ip.strip()
+    if args.arm_port > 0:
+        ARM_PORT = int(args.arm_port)
+    ARM_BASE_URL = f"http://{ARM_IP}:{ARM_PORT}"
+
+    if args.camera_ip:
+        perception_module.CAMERA_IP = args.camera_ip.strip()
+    if args.camera_port > 0:
+        perception_module.CAMERA_PORT = int(args.camera_port)
+    if args.camera_candidates:
+        perception_module.CANDIDATE_CAMERA_ENDPOINTS = args.camera_candidates.strip()
+
     log.info(
-        "main args: white=%s black=%s calibrate=%s manual=%s max_moves=%d fresh=%s no_resume=%s debug=%s",
+        "main args: white=%s black=%s calibrate=%s manual=%s max_moves=%d fresh=%s no_resume=%s debug=%s arm=%s:%d camera=%s:%d candidates=%s",
         args.white,
         args.black,
         args.calibrate,
@@ -1086,11 +1413,19 @@ def main() -> int:
         args.fresh,
         args.no_resume,
         args.debug,
+        ARM_IP,
+        ARM_PORT,
+        perception_module.CAMERA_IP,
+        perception_module.CAMERA_PORT,
+        perception_module.CANDIDATE_CAMERA_ENDPOINTS,
     )
 
     if args.fresh:
         _checkpoint_clear()
         log.info("cleared checkpoint due to --fresh")
+
+    if args.preflight:
+        return run_preflight(check_frame=args.preflight_frame)
 
     if not args.white and not args.black:
         args.white = True

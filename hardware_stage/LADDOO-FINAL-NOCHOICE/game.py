@@ -26,7 +26,6 @@ BP, BN, BB, BQ, BK = 6, 7, 8, 9, 10
 N = 36
 MATE = 100000
 MAX_PLY = 64
-TOTAL_CLOCK = 900.0
 SAFETY_BUFFER = 5.0
 MIN_MOVE_TIME = 0.5
 MAX_MOVE_TIME = 30.0
@@ -1060,8 +1059,7 @@ _tlim = 15.0
 _stop = False
 _pos_history = set()
 _game_hist = {}
-_game_last_pieces = 0
-_clock_remaining = TOTAL_CLOCK
+_clock_remaining = 0.0
 _move_number = 0
 _score_history = []
 
@@ -1536,8 +1534,7 @@ def _root(bd, d, a, b, w):
 
 def _go(bd, w, move_time):
     global _pos_history
-    hard = min(move_time, _clock_remaining - SAFETY_BUFFER)
-    hard = max(hard, MIN_MOVE_TIME)
+    hard = max(float(move_time), MIN_MOVE_TIME)
     _reset(hard)
 
     if not w:
@@ -1628,27 +1625,38 @@ def _fmt(mv):
 # Entry Point
 # ===================================================================
 
-def get_best_move(board: np.ndarray, playing_white: bool = True) -> Optional[str]:
-    global _side_to_move, _clock_remaining, _move_number, _game_last_pieces, _score_history
+def get_best_move(
+    board: np.ndarray,
+    playing_white: bool = True,
+    time_budget_sec: Optional[float] = None,
+    remaining_time_sec: Optional[float] = None,
+) -> Optional[str]:
+    global _side_to_move, _clock_remaining, _move_number, _score_history
     _side_to_move = playing_white
 
     bd = Board(np.array(board, dtype=int))
-    piece_count = sum(1 for sq in bd.sq if sq != EMPTY)
-    if piece_count > _game_last_pieces + 2:
-        _clock_remaining = TOTAL_CLOCK
-        _move_number = 0
-        _game_hist.clear()
-        _score_history = []
-    _game_last_pieces = piece_count
+
+    if remaining_time_sec is not None:
+        # Caller-controlled team clock mode: refresh available time every call.
+        _clock_remaining = max(0.0, float(remaining_time_sec))
 
     _record_position(board, playing_white)
+
+    # Resolve search budget:
+    # 1) Use allocator based on the currently known remaining clock.
+    # 2) If caller gives a hard cap, clamp to that cap.
     move_time = _allocate_time(bd)
+    if time_budget_sec is not None:
+        move_time = min(move_time, max(0.05, float(time_budget_sec)))
 
     t_start = time.time()
     mv, score = _go(bd, playing_white, move_time)
     elapsed = time.time() - t_start
 
-    _clock_remaining -= elapsed
+    if remaining_time_sec is None:
+        _clock_remaining -= elapsed
+
+    # Keep learning signals in all modes.
     _move_number += 1
     _score_history.append(score)
 
@@ -1679,9 +1687,9 @@ if __name__ == "__main__":
     print("=" * 50)
 
     t0 = time.time()
-    mw = get_best_move(initial, True)
+    mw = get_best_move(initial, True, remaining_time_sec=900.0)
     print(f"White: {mw}  ({time.time() - t0:.2f}s, {_nodes} nodes)")
 
     t0 = time.time()
-    mb = get_best_move(initial, False)
+    mb = get_best_move(initial, False, remaining_time_sec=900.0)
     print(f"Black: {mb}  ({time.time() - t0:.2f}s, {_nodes} nodes)")
