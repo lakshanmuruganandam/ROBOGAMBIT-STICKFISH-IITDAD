@@ -1,0 +1,39 @@
+step by step.
+
+1.Use the correct folder now:
+USE hardware_stage/LADDOO-FINAL-NOCHOICE INSIDE
+Work from main.py and perception.py.
+
+
+2.Restart hardware services:
+Restart arm controller server and camera stream server first.
+
+3.Put all devices on same Wi-Fi:
+Laptop, ESP/arm controller, and camera server must be on the same network.
+
+4.Set camera IP/port:
+In perception.py:16, set SERVER_IP.
+In perception.py:17, set SERVER_PORT.
+
+5.Set serial ports:
+In main.py:46, set arm COM port (COM4 currently).
+In main.py:50, set solenoid COM port (COM3 currently).
+
+6.Set clock offset:
+In main.py:54, set CLOCK_OFFSET_SEC (currently 10.0). # DONT CHANGE NOW 
+
+7.Run main:
+run the main.py inside the laddoo-final-nochoice:
+"hardware_stage/LADDOO-FINAL-NOCHOICE/main.py"
+
+8.Input at prompt:
+At main.py:384: enter w or b.
+At main.py:385: enter 10 or 15.
+
+9.During game:
+You will see phase, clock, and bot move prints in console from main.py:429.
+Promotion flow will ask for manual replacement-piece placement (as coordinator rule).
+
+10.Done:
+If camera connects, board stabilizes, and you see bot move prints, you are good to go.
+
