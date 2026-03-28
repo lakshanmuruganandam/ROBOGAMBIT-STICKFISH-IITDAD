@@ -110,6 +110,22 @@ def _cell_to_world(cell: str):
     return wx, wy
 
 
+def _perception_outputs_robot_coords() -> bool:
+    """True when pose outputs are already transformed to robot coordinates."""
+    if vision_system is not None and hasattr(vision_system, "use_robot_coords"):
+        return bool(getattr(vision_system, "use_robot_coords"))
+    # Keep default aligned with perception.BoardPerception.
+    return os.getenv("PERCEPTION_USE_ROBOT_REALITY", "1") == "1"
+
+
+def _cell_to_arm_target(cell: str):
+    """Map a board cell to the coordinate frame used by arm commands."""
+    wx, wy = _cell_to_world(cell)
+    if _perception_outputs_robot_coords() and hasattr(perception, "apply_world_to_robot"):
+        return perception.apply_world_to_robot(wx, wy)
+    return wx, wy
+
+
 def _init_hardware() -> None:
     """Open arm/solenoid serial and camera socket only at runtime."""
     global ser, ser2, vision_system
@@ -241,8 +257,8 @@ def movetocmd(move: str) -> list:
 
     # ── Parse move string ─────────────────────────────────────────────────────
     mover_piece, src_cell, dst_cell, promo_id = _parse_move_string(move)
-    src_x, src_y = _cell_to_world(src_cell)
-    dst_x, dst_y = _cell_to_world(dst_cell)
+    src_x, src_y = _cell_to_arm_target(src_cell)
+    dst_x, dst_y = _cell_to_arm_target(dst_cell)
 
     # Use live pose if available to improve pick accuracy.
     src_x, src_y = _nearest_pose_for_piece(mover_piece, (src_x, src_y))
@@ -475,6 +491,10 @@ def _print_startup_connections() -> None:
     print(
         f"[STARTUP] camera_socket={('CONNECTED' if cam_ok else 'DISCONNECTED')} "
         f"endpoint={perception.SERVER_IP}:{perception.SERVER_PORT}"
+    )
+    print(
+        f"[STARTUP] calibration_mode="
+        f"{'WORLD_TO_ROBOT_ACTIVE' if _perception_outputs_robot_coords() else 'BOARD_WORLD_DIRECT'}"
     )
 
    
