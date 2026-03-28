@@ -13,8 +13,8 @@ import socket
 import struct
 
 # Network endpoint for the camera stream server.
-SERVER_IP   = '192.168.4.2' 
-SERVER_PORT = 9992
+SERVER_IP   = '10.194.26.222' 
+SERVER_PORT = 9999
 
 # Camera intrinsics calibrated for the current stream profile.
 CAMERA_MATRIX = np.array([
@@ -36,11 +36,19 @@ TOP_LEFT_Y  = 180
 BOARD_SIZE  = 6
 PIECE_IDS   = set(range(1, 11))
 CELL_THRESHOLD_MM = 60.0
+DEBUG_PERCEPTION = True
+DEBUG_EVERY_N_FRAMES = 20
+
+ARUCO_DICT_CANDIDATES = [
+    aruco.DICT_4X4_50,
+    aruco.DICT_4X4_100,
+    aruco.DICT_4X4_250,
+    aruco.DICT_5X5_50,
+]
 
 class BoardPerception:
     def __init__(self, connect_socket=True):
         """Initialize ArUco detector and connect to the camera stream."""
-        aruco_dict = aruco.getPredefinedDictionary(aruco.DICT_4X4_50)
         params     = aruco.DetectorParameters()
         params.cornerRefinementMethod      = aruco.CORNER_REFINE_SUBPIX
         params.adaptiveThreshWinSizeMin    = 3
@@ -55,12 +63,17 @@ class BoardPerception:
         params.cornerRefinementMaxIterations = 30
         params.cornerRefinementMinAccuracy = 0.1
         params.adaptiveThreshConstant      = 7
-        self.detector = aruco.ArucoDetector(aruco_dict, params)
+        self._detectors = []
+        for dict_id in ARUCO_DICT_CANDIDATES:
+            d = aruco.getPredefinedDictionary(dict_id)
+            self._detectors.append((dict_id, aruco.ArucoDetector(d, params)))
 
         self.H_matrix      = None
         self.corner_pixels = {}
         self._board_history = deque(maxlen=9)
         self._pose_history = deque(maxlen=9)
+        self._frame_count = 0
+        self._last_detect_dict = None
         
         # Optional socket connect supports offline tests using saved frames.
         if connect_socket:
@@ -121,13 +134,17 @@ class BoardPerception:
         best_corners = None
         best_ids = None
         best_count = -1
+        best_dict = None
         for img in variants:
-            corners, ids, _ = self.detector.detectMarkers(img)
-            count = 0 if ids is None else int(len(ids))
-            if count > best_count:
-                best_count = count
-                best_corners = corners
-                best_ids = ids
+            for dict_id, detector in self._detectors:
+                corners, ids, _ = detector.detectMarkers(img)
+                count = 0 if ids is None else int(len(ids))
+                if count > best_count:
+                    best_count = count
+                    best_corners = corners
+                    best_ids = ids
+                    best_dict = dict_id
+        self._last_detect_dict = best_dict
         return best_corners, best_ids
 
     def _world_to_cell(self, wx, wy):
@@ -193,9 +210,21 @@ class BoardPerception:
     def get_latest_state_from_frame(self, frame):
         """Processes a single provided frame to extract board state and poses."""
         corners, ids = self._detect_markers_best(frame)
+        self._frame_count += 1
 
         board = np.zeros((BOARD_SIZE, BOARD_SIZE), dtype=int)
         poses = {}
+
+        if DEBUG_PERCEPTION and (self._frame_count % DEBUG_EVERY_N_FRAMES == 0):
+            if ids is None:
+                print("[PERCEPTION] no markers detected")
+            else:
+                id_list = [int(x) for x in ids.flatten().tolist()]
+                seen_corners = sorted([i for i in id_list if i in CORNER_WORLD])
+                print(
+                    f"[PERCEPTION] markers={id_list} corners_seen={seen_corners} "
+                    f"dict={self._last_detect_dict} homography={self.H_matrix is not None}"
+                )
 
         if ids is not None:
             # Draw overlays for debug visualization.
