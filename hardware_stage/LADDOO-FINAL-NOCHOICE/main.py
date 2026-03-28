@@ -5,6 +5,7 @@ perception polling, and arm command execution.
 """
 
 import game
+import os
 import numpy as np
 import requests
 import argparse
@@ -62,14 +63,15 @@ RESERVE_POS = {
 
 
 BOARD = np.zeros((6, 6), dtype=int)
-# Arm controller serial port.
-ser = PySerial("COM4", baudrate=115200, dsrdtr=None)
-ser.setRTS(False)
-ser.setDTR(False)
-# Electromagnet (solenoid) serial port.
-ser2 = PySerial('COM3', 115200) 
+# Serial configuration (override with env vars if needed).
+ARM_SERIAL_PORT = os.getenv("ROBO_ARM_SERIAL_PORT", "COM8")
+SOLENOID_SERIAL_PORT = os.getenv("ROBO_SOLENOID_SERIAL_PORT", "COM10")
+SERIAL_BAUD = int(os.getenv("ROBO_SERIAL_BAUD", "115200"))
+
+ser = None
+ser2 = None
 POSES = {}
-vision_system = BoardPerception()
+vision_system = None
 TEAM_TIME_REMAINING = 0.0
 CLOCK_OFFSET_SEC = 10.0
 
@@ -101,9 +103,53 @@ def _parse_move_string(move: str):
 def _cell_to_world(cell: str):
     col = _COL_MAP[cell[0].upper()]
     row = int(cell[1]) - 1
+    # Keep axis convention identical to perception.world_to_cell:
+    # rows map along X, columns map along Y.
     wx = perception.TOP_LEFT_X - (row * perception.SQUARE_SIZE + perception.SQUARE_SIZE / 2)
     wy = perception.TOP_LEFT_Y - (col * perception.SQUARE_SIZE + perception.SQUARE_SIZE / 2)
     return wx, wy
+
+
+def _init_hardware() -> None:
+    """Open arm/solenoid serial and camera socket only at runtime."""
+    global ser, ser2, vision_system
+
+    if ser is None:
+        ser = PySerial(ARM_SERIAL_PORT, baudrate=SERIAL_BAUD, dsrdtr=None)
+        ser.setRTS(False)
+        ser.setDTR(False)
+
+    if ser2 is None:
+        ser2 = PySerial(SOLENOID_SERIAL_PORT, SERIAL_BAUD)
+
+    if vision_system is None:
+        vision_system = BoardPerception()
+
+
+def _cleanup_hardware() -> None:
+    """Close camera and serial resources safely."""
+    global ser, ser2, vision_system
+
+    if vision_system is not None:
+        try:
+            vision_system.cleanup()
+        except Exception:
+            pass
+        vision_system = None
+
+    if ser is not None:
+        try:
+            ser.close()
+        except Exception:
+            pass
+        ser = None
+
+    if ser2 is not None:
+        try:
+            ser2.close()
+        except Exception:
+            pass
+        ser2 = None
 
 
 def _nearest_pose_for_piece(piece_id: int, target_xy):
@@ -124,6 +170,8 @@ def _nearest_pose_for_piece(piece_id: int, target_xy):
 def get_board_state() -> np.ndarray:
     """Use the perception module to get the current board state."""
     global BOARD, POSES
+    if vision_system is None:
+        return BOARD
     latest_board, latest_poses = vision_system.get_latest_state()
     if latest_board is not None:
         BOARD = latest_board
@@ -230,12 +278,16 @@ def movetocmd(move: str) -> list:
 
 def pick():
     """Activate the electromagnet to grip a piece."""
+    if ser2 is None:
+        raise RuntimeError("Solenoid serial is not initialized.")
     ser2.write(b'1')
 
 
 
 def place():
     """Deactivate the electromagnet to release a piece."""
+    if ser2 is None:
+        raise RuntimeError("Solenoid serial is not initialized.")
     ser2.write(b'0')
 
 
@@ -243,6 +295,8 @@ def place():
 def send_cmd(command: str):
     """Send a single JSON command to the robot arm via HTTP."""
     print(f"Sending command: {command}")
+    if ser is None:
+        raise RuntimeError("Arm serial is not initialized.")
     ser.write(command.encode() + b'\n')
 
 COL_LETTERS = ['A', 'B', 'C', 'D', 'E', 'F']
@@ -402,8 +456,8 @@ def _bot_time_budget_seconds() -> float:
 
 def _print_startup_connections() -> None:
     """Print serial and camera connectivity status before starting the game loop."""
-    arm_ok = bool(getattr(ser, "is_open", False))
-    solenoid_ok = bool(getattr(ser2, "is_open", False))
+    arm_ok = bool(getattr(ser, "is_open", False)) if ser is not None else False
+    solenoid_ok = bool(getattr(ser2, "is_open", False)) if ser2 is not None else False
 
     cam_ok = False
     cam_socket = getattr(vision_system, "client_socket", None)
@@ -413,10 +467,10 @@ def _print_startup_connections() -> None:
         except Exception:
             cam_ok = False
 
-    print(f"[STARTUP] arm_serial={('CONNECTED' if arm_ok else 'DISCONNECTED')} port={getattr(ser, 'port', 'unknown')}")
+    print(f"[STARTUP] arm_serial={('CONNECTED' if arm_ok else 'DISCONNECTED')} port={getattr(ser, 'port', 'uninitialized')}")
     print(
         f"[STARTUP] solenoid_serial={('CONNECTED' if solenoid_ok else 'DISCONNECTED')} "
-        f"port={getattr(ser2, 'port', 'unknown')}"
+        f"port={getattr(ser2, 'port', 'uninitialized')}"
     )
     print(
         f"[STARTUP] camera_socket={('CONNECTED' if cam_ok else 'DISCONNECTED')} "
@@ -425,90 +479,95 @@ def _print_startup_connections() -> None:
 
    
 if __name__ == "__main__":
-    color=input("Which color is the bot playing?(w/b): ")
-    TEAM_TIME_REMAINING=float(int(input("Enter the Time control(10/15): "))*60)
-    playing_white=(color=='w')
-    if playing_white==True: t=0
-    else: t=-1
-    _print_startup_connections()
-    print(
-        f"[CLOCK] Team clock initialized: raw={TEAM_TIME_REMAINING:.0f}s "
-        f"offset={CLOCK_OFFSET_SEC:+.1f}s "
-        f"effective={_effective_team_time_remaining():.1f}s"
-    )
-    print("[PHASE] Cycle: OUR_BOT -> OPPONENT -> OUR_HUMAN -> OPPONENT")
-    print("[RULE] Coordinator mode active:")
-    print("[RULE] 1) Team alternates robot and human turns.")
-    print("[RULE] 2) Robot executes captures as OUT-then-IN.")
-    print("[RULE] 3) On promotion, robot removes pawn; human places selected replacement piece.")
-    BOARD= get_stable_board_state()
-    phase_started_at = time.time()
-    last_phase = None
+    try:
+        _init_hardware()
 
-    while True:
-        curr = get_stable_board_state()
-        phase = t % 4
-        if _effective_team_time_remaining() <= 0.0:
-            print(
-                f"[CLOCK] Team clock exhausted "
-                f"(raw={TEAM_TIME_REMAINING:.2f}s effective={_effective_team_time_remaining():.2f}s)."
-            )
-            log_result("TIMEOUT", 'rglog.txt')
-            break
+        color=input("Which color is the bot playing?(w/b): ")
+        TEAM_TIME_REMAINING=float(int(input("Enter the Time control(10/15): "))*60)
+        playing_white=(color=='w')
+        if playing_white==True: t=0
+        else: t=-1
+        _print_startup_connections()
+        print(
+            f"[CLOCK] Team clock initialized: raw={TEAM_TIME_REMAINING:.0f}s "
+            f"offset={CLOCK_OFFSET_SEC:+.1f}s "
+            f"effective={_effective_team_time_remaining():.1f}s"
+        )
+        print("[PHASE] Cycle: OUR_BOT -> OPPONENT -> OUR_HUMAN -> OPPONENT")
+        print("[RULE] Coordinator mode active:")
+        print("[RULE] 1) Team alternates robot and human turns.")
+        print("[RULE] 2) Robot executes captures as OUT-then-IN.")
+        print("[RULE] 3) On promotion, robot removes pawn; human places selected replacement piece.")
+        BOARD= get_stable_board_state()
+        phase_started_at = time.time()
+        last_phase = None
 
-        if phase != last_phase:
-            print(f"[PHASE] active={_phase_name(phase)}")
-            last_phase = phase
-
-        if phase==0:
-            bot_turn_start = time.time()
-            send_cmd(json.dumps({'T':100}))
-            budget = _bot_time_budget_seconds()
-            best_move = move(
-                playing_white,
-                time_budget_sec=budget,
-                remaining_time_sec=_effective_team_time_remaining(),
-            )
-            if best_move is None:
-                print("No moves available — game over.")
-                log_result(input("Enter result"),'rglog.txt')
+        while True:
+            curr = get_stable_board_state()
+            phase = t % 4
+            if _effective_team_time_remaining() <= 0.0:
+                print(
+                    f"[CLOCK] Team clock exhausted "
+                    f"(raw={TEAM_TIME_REMAINING:.2f}s effective={_effective_team_time_remaining():.2f}s)."
+                )
+                log_result("TIMEOUT", 'rglog.txt')
                 break
-            print(
-                f"[BOT] move={best_move} budget={budget:.2f}s "
-                f"raw_remaining={TEAM_TIME_REMAINING:.2f}s "
-                f"effective_remaining={_effective_team_time_remaining():.2f}s"
-            )
-            for step in movetocmd(best_move):
-                if step == "PICK":  pick()
-                elif step == "PLACE": place()
-                elif step.startswith("HUMAN_PROMO:"):
-                    _tag, pid, cell = step.split(":", 2)
-                    print(f"[PROMOTION] Bot selected piece id {pid} for {cell}.")
-                    input("Place promoted piece by hand, then press Enter to continue...")
-                else:
-                    send_cmd(step)
-                time.sleep(0.25)
-            send_cmd(json.dumps({'T':100}))
-            BOARD=get_stable_board_state()
-            t+=1
-            _deduct_team_time(time.time() - bot_turn_start, "our bot turn (think + arm + promotion handling)")
-            phase_started_at = time.time()
 
-        elif not np.array_equal(curr, BOARD):
-            move_tuple = log_move(BOARD, curr, 'rglog.txt')
-            if phase != 0 and not check_legal(BOARD, move_tuple):
-                with open('rglog.txt', 'a') as f:
-                    f.write("previous move was illegal\n")
-                continue
+            if phase != last_phase:
+                print(f"[PHASE] active={_phase_name(phase)}")
+                last_phase = phase
 
-            if phase == 2:
-                # Time from start of OUR_HUMAN phase until board changes counts to our team.
-                _deduct_team_time(time.time() - phase_started_at, "our human turn")
+            if phase==0:
+                bot_turn_start = time.time()
+                send_cmd(json.dumps({'T':100}))
+                budget = _bot_time_budget_seconds()
+                best_move = move(
+                    playing_white,
+                    time_budget_sec=budget,
+                    remaining_time_sec=_effective_team_time_remaining(),
+                )
+                if best_move is None:
+                    print("No moves available — game over.")
+                    log_result(input("Enter result"),'rglog.txt')
+                    break
+                print(
+                    f"[BOT] move={best_move} budget={budget:.2f}s "
+                    f"raw_remaining={TEAM_TIME_REMAINING:.2f}s "
+                    f"effective_remaining={_effective_team_time_remaining():.2f}s"
+                )
+                for step in movetocmd(best_move):
+                    if step == "PICK":  pick()
+                    elif step == "PLACE": place()
+                    elif step.startswith("HUMAN_PROMO:"):
+                        _tag, pid, cell = step.split(":", 2)
+                        print(f"[PROMOTION] Bot selected piece id {pid} for {cell}.")
+                        input("Place promoted piece by hand, then press Enter to continue...")
+                    else:
+                        send_cmd(step)
+                    time.sleep(0.25)
+                send_cmd(json.dumps({'T':100}))
+                BOARD=get_stable_board_state()
+                t+=1
+                _deduct_team_time(time.time() - bot_turn_start, "our bot turn (think + arm + promotion handling)")
+                phase_started_at = time.time()
 
-            BOARD=get_stable_board_state()
-            t+=1
+            elif not np.array_equal(curr, BOARD):
+                move_tuple = log_move(BOARD, curr, 'rglog.txt')
+                if phase != 0 and not check_legal(BOARD, move_tuple):
+                    with open('rglog.txt', 'a') as f:
+                        f.write("previous move was illegal\n")
+                    continue
 
-            phase_started_at = time.time()
-            print(f"[PHASE] observed external move; next phase={_phase_name(t % 4)}")
+                if phase == 2:
+                    # Time from start of OUR_HUMAN phase until board changes counts to our team.
+                    _deduct_team_time(time.time() - phase_started_at, "our human turn")
 
-        time.sleep(0.1)   # brief pause before sensing the next board state
+                BOARD=get_stable_board_state()
+                t+=1
+
+                phase_started_at = time.time()
+                print(f"[PHASE] observed external move; next phase={_phase_name(t % 4)}")
+
+            time.sleep(0.1)   # brief pause before sensing the next board state
+    finally:
+        _cleanup_hardware()
