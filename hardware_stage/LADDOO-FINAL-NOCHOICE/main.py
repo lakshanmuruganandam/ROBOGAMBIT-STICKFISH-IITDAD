@@ -8,13 +8,33 @@ import game
 import numpy as np
 import requests
 import argparse
-import serial
 import time
 import perception
 from perception import BoardPerception
 
 
 import json
+
+try:
+    import serial as pyserial
+except Exception as exc:
+    raise RuntimeError(
+        "pyserial import failed. Install with: pip install pyserial"
+    ) from exc
+
+try:
+    # Preferred path when pyserial is correctly installed.
+    from serial import Serial as PySerial
+except Exception:
+    try:
+        # Fallback for environments where Serial is not re-exported in __init__.
+        from serial.serialwin32 import Serial as PySerial
+    except Exception as exc:
+        raise RuntimeError(
+            "Imported 'serial' module does not provide Serial. "
+            f"Loaded module file: {getattr(pyserial, '__file__', 'unknown')}. "
+            "Ensure pyserial is installed in the same interpreter used to run main.py."
+        ) from exc
 
 # Board geometry mapping; must stay consistent with perception grid conventions.
 _COL_MAP     = {'A':0,'B':1,'C':2,'D':3,'E':4,'F':5}
@@ -43,11 +63,11 @@ RESERVE_POS = {
 
 BOARD = np.zeros((6, 6), dtype=int)
 # Arm controller serial port.
-ser = serial.Serial("COM4", baudrate=115200, dsrdtr=None)
+ser = PySerial("COM4", baudrate=115200, dsrdtr=None)
 ser.setRTS(False)
 ser.setDTR(False)
 # Electromagnet (solenoid) serial port.
-ser2 = serial.Serial('COM3', 115200) 
+ser2 = PySerial('COM3', 115200) 
 POSES = {}
 vision_system = BoardPerception()
 TEAM_TIME_REMAINING = 0.0
