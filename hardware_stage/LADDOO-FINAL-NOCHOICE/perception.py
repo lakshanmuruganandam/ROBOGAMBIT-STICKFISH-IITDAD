@@ -35,7 +35,7 @@ TOP_LEFT_X  = 180
 TOP_LEFT_Y  = 180
 BOARD_SIZE  = 6
 PIECE_IDS   = set(range(1, 11))
-CELL_THRESHOLD_MM = 60.0
+CELL_THRESHOLD_MM = 75.0
 DEBUG_PERCEPTION = True
 DEBUG_EVERY_N_FRAMES = 20
 
@@ -45,6 +45,8 @@ ARUCO_DICT_CANDIDATES = [
     aruco.DICT_4X4_250,
     aruco.DICT_5X5_50,
 ]
+
+EXPECTED_IDS = set(CORNER_WORLD.keys()) | PIECE_IDS
 
 class BoardPerception:
     def __init__(self, connect_socket=True):
@@ -70,8 +72,8 @@ class BoardPerception:
 
         self.H_matrix      = None
         self.corner_pixels = {}
-        self._board_history = deque(maxlen=9)
-        self._pose_history = deque(maxlen=9)
+        self._board_history = deque(maxlen=15)
+        self._pose_history = deque(maxlen=15)
         self._frame_count = 0
         self._last_detect_dict = None
         
@@ -114,9 +116,10 @@ class BoardPerception:
         return float(pt[0][0][0]), float(pt[0][0][1])
 
     def _detect_markers_best(self, frame):
-        """Run marker detection on multiple image variants and keep best result."""
+        """Run marker detection on multiple variants and keep the most plausible result."""
         und = cv2.undistort(frame, CAMERA_MATRIX, DIST_COEFFS, None, CAMERA_MATRIX)
         gray = cv2.cvtColor(und, cv2.COLOR_BGR2GRAY)
+        kernel = np.ones((3, 3), dtype=np.uint8)
 
         variants = [
             gray,
@@ -129,18 +132,38 @@ class BoardPerception:
                 11,
                 2,
             ),
+            cv2.adaptiveThreshold(
+                gray,
+                255,
+                cv2.ADAPTIVE_THRESH_MEAN_C,
+                cv2.THRESH_BINARY,
+                15,
+                3,
+            ),
+            cv2.GaussianBlur(gray, (5, 5), 0),
+            cv2.morphologyEx(gray, cv2.MORPH_OPEN, kernel),
+            cv2.morphologyEx(gray, cv2.MORPH_CLOSE, kernel),
         ]
 
         best_corners = None
         best_ids = None
-        best_count = -1
+        best_score = -1
         best_dict = None
         for img in variants:
             for dict_id, detector in self._detectors:
                 corners, ids, _ = detector.detectMarkers(img)
-                count = 0 if ids is None else int(len(ids))
-                if count > best_count:
-                    best_count = count
+                if ids is None:
+                    continue
+
+                id_list = [int(x) for x in ids.flatten().tolist()]
+                valid = sum(1 for x in id_list if x in EXPECTED_IDS)
+                corners_seen = sum(1 for x in id_list if x in CORNER_WORLD)
+                piece_seen = sum(1 for x in id_list if x in PIECE_IDS)
+
+                # Prefer detections that match expected IDs and preserve corner markers.
+                score = (valid * 5) + (corners_seen * 12) + piece_seen
+                if score > best_score:
+                    best_score = score
                     best_corners = corners
                     best_ids = ids
                     best_dict = dict_id
@@ -162,7 +185,7 @@ class BoardPerception:
 
     @staticmethod
     def _consensus_board(boards):
-        """Cell-wise majority vote across recent board snapshots."""
+        """Cell-wise vote with non-zero preference to resist brief marker dropouts."""
         if not boards:
             return None
         stack = np.stack(boards, axis=0).astype(np.int32)
@@ -170,7 +193,17 @@ class BoardPerception:
         for r in range(BOARD_SIZE):
             for c in range(BOARD_SIZE):
                 vals = stack[:, r, c]
-                consensus[r, c] = int(np.bincount(vals, minlength=11).argmax())
+                counts = np.bincount(vals, minlength=11)
+                zero_count = int(counts[0])
+                nonzero_id = int(np.argmax(counts[1:]) + 1)
+                nonzero_count = int(counts[nonzero_id])
+
+                # Prefer a recurring non-zero marker when it appears reliably,
+                # even if occasional missed frames produced extra zeros.
+                if nonzero_count >= 3 and nonzero_count >= int(0.6 * zero_count):
+                    consensus[r, c] = nonzero_id
+                else:
+                    consensus[r, c] = int(np.argmax(counts))
         return consensus
 
     @staticmethod
