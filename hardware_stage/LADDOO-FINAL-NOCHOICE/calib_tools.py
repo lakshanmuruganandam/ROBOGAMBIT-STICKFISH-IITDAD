@@ -62,16 +62,16 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _format_robot_reality(corner_robot_xyz: Dict[int, Tuple[float, float, float]]) -> str:
+def _format_robot_reality(corner_robot_xy: Dict[int, Tuple[float, float]]) -> str:
     lines = ["ROBOT_REALITY = {"]
     for cid in [21, 22, 23, 24]:
-        x, y, _z = corner_robot_xyz[cid]
+        x, y = corner_robot_xy[cid]
         lines.append(f"    {cid}: ({x:.2f}, {y:.2f}),")
     lines.append("}")
     return "\n".join(lines)
 
 
-def _update_perception_robot_reality(perception_file: str, corner_robot_xyz: Dict[int, Tuple[float, float, float]]) -> bool:
+def _update_perception_robot_reality(perception_file: str, corner_robot_xy: Dict[int, Tuple[float, float]]) -> bool:
     if not os.path.exists(perception_file):
         print(f"[WARN] perception file not found: {perception_file}")
         return False
@@ -79,7 +79,7 @@ def _update_perception_robot_reality(perception_file: str, corner_robot_xyz: Dic
     with open(perception_file, "r", encoding="utf-8") as f:
         content = f.read()
 
-    replacement_block = _format_robot_reality(corner_robot_xyz)
+    replacement_block = _format_robot_reality(corner_robot_xy)
     pattern = r"ROBOT_REALITY\s*=\s*\{[^\}]*\}"
     new_content, count = re.subn(pattern, replacement_block, content, flags=re.DOTALL)
 
@@ -165,11 +165,11 @@ def _run_prematch(
     flow.preflight()
     flow.verify_perception_board_loop()
     flow.set_stable_start_pose()
-    flow.capture_corner_points()
+    flow.capture_square_points()
     flow.compute_homography()
 
     print("\n=== APPLY CALIBRATION TO PERCEPTION ===")
-    _update_perception_robot_reality(perception_file, flow.corner_robot_xyz)
+    _update_perception_robot_reality(perception_file, flow.corner_robot_xy)
 
     if not skip_z_capture:
         z_hover, z_touch = _capture_z_levels(flow.arm, flow.arm.cfg.z_hover, flow.arm.cfg.z_touch)

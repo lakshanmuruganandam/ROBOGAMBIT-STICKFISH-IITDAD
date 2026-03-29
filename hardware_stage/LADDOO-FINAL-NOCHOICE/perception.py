@@ -1,5 +1,6 @@
 import math
 import os
+import time
 import cv2
 import cv2.aruco as aruco
 import numpy as np
@@ -178,6 +179,8 @@ class BoardPerception:
         # Opponent-style calibration flow: keep perception in board-world by default.
         # Main applies world->robot calibration for commanded arm targets.
         self.use_robot_coords = os.getenv("PERCEPTION_USE_ROBOT_REALITY", "0") == "1"
+        self.debug_ids = os.getenv("PERCEPTION_DEBUG_IDS", "0") == "1"
+        self._last_debug_ts = 0.0
 
         if connect_socket:
             print(f"Connecting to {SERVER_IP}:{SERVER_PORT} ...")
@@ -196,6 +199,18 @@ class BoardPerception:
         frame = cv2.undistort(frame, CAMERA_MATRIX, DIST_COEFFS, None, CAMERA_MATRIX)
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         corners, ids, _ = detector.detectMarkers(gray)
+
+        if self.debug_ids:
+            now = time.time()
+            if now - self._last_debug_ts >= 1.0:
+                self._last_debug_ts = now
+                id_list = [] if ids is None else [int(v) for v in ids.flatten()]
+                corner_seen = sorted([int(k) for k in self.corner_pixels.keys()])
+                print(
+                    f"[PERCEPTION_DEBUG] ids={id_list} "
+                    f"corners_seen={corner_seen} "
+                    f"homography_locked={self.H_matrix is not None}"
+                )
 
         board = np.zeros((BOARD_SIZE, BOARD_SIZE), dtype=int)
         poses = {}

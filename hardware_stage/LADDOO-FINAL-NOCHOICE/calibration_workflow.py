@@ -59,6 +59,7 @@ CALIB_STABLE_MODE = "folded"
 
 
 CORNER_IDS = [21, 22, 23, 24]
+CALIB_SQUARE_CELLS = ["C3", "A1", "F6", "B2", "C2"]
 
 PIECE_LABELS = {
     0: "..",
@@ -175,7 +176,8 @@ class ArmController:
 class CalibrationWorkflow:
     def __init__(self, arm: ArmController):
         self.arm = arm
-        self.corner_robot_xyz: Dict[int, Tuple[float, float, float]] = {}
+        self.square_robot_xyz: Dict[str, Tuple[float, float, float]] = {}
+        self.corner_robot_xy: Dict[int, Tuple[float, float]] = {}
         self.tests: List[dict] = []
         self.h_world_to_robot: Optional[np.ndarray] = None
 
@@ -233,33 +235,38 @@ class CalibrationWorkflow:
             time.sleep(1.0)
         print(f"[OK] Stable pose sent (mode={self.arm.cfg.stable_mode}).")
 
-    def capture_corner_points(self) -> None:
-        print("\n=== CAPTURE CORNER POINTS ===")
-        print("Use your normal manual jog method to place arm tip at each marker center.")
-        print("Order: 21 (TL), 22 (TR), 23 (BR), 24 (BL) based on your board definition.")
+    def capture_square_points(self) -> None:
+        print("\n=== CAPTURE PIECE-SQUARE POINTS (XY CALIBRATION) ===")
+        print("Place a piece at each square and put arm tip at piece center before capture.")
+        print(f"Order: {', '.join(CALIB_SQUARE_CELLS)}")
 
-        for cid in CORNER_IDS:
-            input(f"Position tip at marker {cid} center, then press Enter to capture...")
+        for cell in CALIB_SQUARE_CELLS:
+            input(f"Position tip at piece center on {cell}, then press Enter to capture...")
             x, y, z, _s, _e = self.arm.get_feedback()
             if x is None or y is None or z is None:
-                raise RuntimeError(f"Failed to read feedback for marker {cid}.")
-            self.corner_robot_xyz[cid] = (float(x), float(y), float(z))
-            print(f"[CAPTURED] {cid}: x={x:.2f}, y={y:.2f}, z={z:.2f}")
+                raise RuntimeError(f"Failed to read feedback for square {cell}.")
+            self.square_robot_xyz[cell] = (float(x), float(y), float(z))
+            print(f"[CAPTURED] {cell}: x={x:.2f}, y={y:.2f}, z={z:.2f}")
 
     def compute_homography(self) -> None:
-        print("\n=== COMPUTE WORLD->ROBOT HOMOGRAPHY ===")
-        world_pts = np.array([perception.CORNER_WORLD[c] for c in CORNER_IDS], dtype=np.float32)
-        robot_pts = np.array([(self.corner_robot_xyz[c][0], self.corner_robot_xyz[c][1]) for c in CORNER_IDS], dtype=np.float32)
+        print("\n=== COMPUTE WORLD->ROBOT HOMOGRAPHY (FROM PIECE SQUARES) ===")
+        world_pts = np.array([self._cell_to_world(cell) for cell in CALIB_SQUARE_CELLS], dtype=np.float32)
+        robot_pts = np.array([(self.square_robot_xyz[cell][0], self.square_robot_xyz[cell][1]) for cell in CALIB_SQUARE_CELLS], dtype=np.float32)
         h, _ = cv2.findHomography(world_pts, robot_pts)
         if h is None:
             raise RuntimeError("Homography solve failed. Recapture corner points.")
         self.h_world_to_robot = h
 
+        # Derive marker-corner robot XY from solved homography so existing perception format stays unchanged.
+        for cid in CORNER_IDS:
+            wx, wy = perception.CORNER_WORLD[cid]
+            self.corner_robot_xy[cid] = self._world_to_robot(wx, wy)
+
         print("[OK] Homography computed.")
         print("Paste-ready ROBOT_REALITY for perception.py:")
         print("ROBOT_REALITY = {")
         for cid in CORNER_IDS:
-            x, y, _z = self.corner_robot_xyz[cid]
+            x, y = self.corner_robot_xy[cid]
             print(f"    {cid}: ({x:.2f}, {y:.2f}),")
         print("}")
 
@@ -326,8 +333,8 @@ class CalibrationWorkflow:
         h_list = self.h_world_to_robot.tolist() if self.h_world_to_robot is not None else None
         report = {
             "timestamp": ts,
-            "corner_robot_xyz": {str(k): [v[0], v[1], v[2]] for k, v in self.corner_robot_xyz.items()},
-            "corner_robot_xy_for_perception": {str(k): [v[0], v[1]] for k, v in self.corner_robot_xyz.items()},
+            "square_robot_xyz": {k: [v[0], v[1], v[2]] for k, v in self.square_robot_xyz.items()},
+            "corner_robot_xy_for_perception": {str(k): [v[0], v[1]] for k, v in self.corner_robot_xy.items()},
             "h_world_to_robot": h_list,
             "tests": self.tests,
             "recommended_steps": [
@@ -382,7 +389,7 @@ def main() -> None:
         arm.connect()
         flow.preflight()
         flow.set_stable_start_pose()
-        flow.capture_corner_points()
+        flow.capture_square_points()
         flow.compute_homography()
         flow.run_validation_tests()
         report_path = flow.save_report()
