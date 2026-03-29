@@ -34,6 +34,16 @@ def _parse_args() -> argparse.Namespace:
         default=os.path.join(os.path.dirname(__file__), "perception.py"),
         help="Path to perception.py where ROBOT_REALITY should be updated",
     )
+    parser.add_argument(
+        "--main-file",
+        default=os.path.join(os.path.dirname(__file__), "main.py"),
+        help="Path to main.py where Z_HOVER and Z_PICK should be updated",
+    )
+    parser.add_argument(
+        "--skip-z-capture",
+        action="store_true",
+        help="Skip manual Z capture and keep current --z-hover/--z-touch values",
+    )
     return parser.parse_args()
 
 
@@ -69,7 +79,74 @@ def _update_perception_robot_reality(perception_file: str, corner_robot_xyz: Dic
     return True
 
 
-def _run_prematch(flow: CalibrationWorkflow, perception_file: str) -> None:
+def _capture_z_levels(arm: ArmController, default_hover: float, default_touch: float) -> Tuple[float, float]:
+    print("\n=== CAPTURE Z LEVELS ===")
+    print("Step 1: Move arm tip to SAFE HOVER height above a center piece (no contact).")
+    input("When stable at hover height, press Enter to capture...")
+    hx, hy, hz, _hs, _he = arm.get_feedback()
+    if hz is None:
+        print("[WARN] Could not read hover Z; using current value.")
+        hover_z = float(default_hover)
+    else:
+        hover_z = float(hz)
+        print(f"[CAPTURED] Hover point x={hx:.2f}, y={hy:.2f}, z={hover_z:.2f}")
+
+    print("\nStep 2: Move arm tip to PICK/TOUCH height (just touching piece top).")
+    input("When stable at touch height, press Enter to capture...")
+    tx, ty, tz, _ts, _te = arm.get_feedback()
+    if tz is None:
+        print("[WARN] Could not read touch Z; using current value.")
+        touch_z = float(default_touch)
+    else:
+        touch_z = float(tz)
+        print(f"[CAPTURED] Touch point x={tx:.2f}, y={ty:.2f}, z={touch_z:.2f}")
+
+    if touch_z >= hover_z:
+        print("[WARN] Touch Z is not below hover Z. Keeping previous configured Z values.")
+        return float(default_hover), float(default_touch)
+
+    print(f"[OK] Using calibrated Z_HOVER={hover_z:.2f}, Z_PICK={touch_z:.2f}")
+    return hover_z, touch_z
+
+
+def _update_main_z_levels(main_file: str, z_hover: float, z_pick: float) -> bool:
+    if not os.path.exists(main_file):
+        print(f"[WARN] main file not found: {main_file}")
+        return False
+
+    with open(main_file, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    content2, count_hover = re.subn(
+        r"Z_HOVER\s*=\s*[-+]?\d+(?:\.\d+)?",
+        f"Z_HOVER = {z_hover:.1f}",
+        content,
+        count=1,
+    )
+    content3, count_pick = re.subn(
+        r"Z_PICK\s*=\s*[-+]?\d+(?:\.\d+)?",
+        f"Z_PICK  = {z_pick:.1f}",
+        content2,
+        count=1,
+    )
+
+    if count_hover == 0 or count_pick == 0:
+        print("[WARN] Could not find Z_HOVER/Z_PICK in main.py; no update applied.")
+        return False
+
+    with open(main_file, "w", encoding="utf-8") as f:
+        f.write(content3)
+
+    print(f"[OK] Updated Z_HOVER and Z_PICK in {main_file}")
+    return True
+
+
+def _run_prematch(
+    flow: CalibrationWorkflow,
+    perception_file: str,
+    main_file: str,
+    skip_z_capture: bool,
+) -> None:
     flow.preflight()
     flow.set_stable_start_pose()
     flow.capture_corner_points()
@@ -77,6 +154,19 @@ def _run_prematch(flow: CalibrationWorkflow, perception_file: str) -> None:
 
     print("\n=== APPLY CALIBRATION TO PERCEPTION ===")
     _update_perception_robot_reality(perception_file, flow.corner_robot_xyz)
+
+    if not skip_z_capture:
+        z_hover, z_touch = _capture_z_levels(flow.arm, flow.arm.cfg.z_hover, flow.arm.cfg.z_touch)
+        flow.arm.cfg.z_hover = z_hover
+        flow.arm.cfg.z_touch = z_touch
+
+    print("\n=== APPLY Z LEVELS TO MAIN ===")
+    _update_main_z_levels(main_file, flow.arm.cfg.z_hover, flow.arm.cfg.z_touch)
+
+    print(
+        f"[CALIB] Active test Z levels: Z_HOVER={flow.arm.cfg.z_hover:.2f}, "
+        f"Z_PICK={flow.arm.cfg.z_touch:.2f}"
+    )
 
     flow.run_validation_tests()
     report = flow.save_report()
@@ -113,6 +203,7 @@ def main() -> None:
     print(f"arm_port={cfg.arm_port}, magnet_port={cfg.magnet_port}, baud={cfg.baud}")
     print(f"stable_mode={cfg.stable_mode}, z_hover={cfg.z_hover}, z_touch={cfg.z_touch}")
     print(f"perception_file={args.perception_file}")
+    print(f"main_file={args.main_file}")
 
     choice = _menu()
     if choice != "1":
@@ -124,7 +215,12 @@ def main() -> None:
 
     try:
         arm.connect()
-        _run_prematch(flow, args.perception_file)
+        _run_prematch(
+            flow,
+            args.perception_file,
+            args.main_file,
+            args.skip_z_capture,
+        )
     finally:
         arm.close()
         print(f"[DONE] {dt.datetime.now().isoformat(timespec='seconds')} Serial ports closed.")
