@@ -360,10 +360,24 @@ def go_to_init():
 #  PIECE OPERATIONS
 # ===========================================================================
 
+def _move_to_xy_at_safe_height(x: float, y: float):
+    """Move in straight segments: vertical to Z_SAFE first, then XY at Z_SAFE."""
+    ax, ay, az, _s, _e = get_feedback_full()
+    if ax is None or ay is None or az is None:
+        # Fallback when feedback is unavailable.
+        linear_move_to(x, y, Z_SAFE)
+        return
+
+    if abs(az - Z_SAFE) > 1.0:
+        linear_move_to(ax, ay, Z_SAFE)
+
+    if abs(ax - x) > 0.5 or abs(ay - y) > 0.5:
+        linear_move_to(x, y, Z_SAFE)
+
 def pick_up_from_coords(x: float, y: float):
     """Full pick-up sequence at physical coordinates (x, y)."""
     electromagnet_off()          # ensure magnet is off before approach
-    linear_move_to(x, y, Z_SAFE)  # move above piece
+    _move_to_xy_at_safe_height(x, y)
     linear_move_to(x, y, Z_GRIP) # optional hover step for better grip
     electromagnet_on()
     time.sleep(0.1)              # brief settle so magnet grips before lifting
@@ -372,7 +386,7 @@ def pick_up_from_coords(x: float, y: float):
 
 def place_down_from_coords(x: float, y: float):
     """Full place-down sequence at physical coordinates (x, y)."""
-    linear_move_to(x, y, Z_SAFE)  # move above placement site
+    _move_to_xy_at_safe_height(x, y)
     linear_move_to(x, y, Z_GRIP) # lower to placement height
     electromagnet_off()
     time.sleep(0.1)
@@ -392,7 +406,7 @@ def  place_down(row: int, col: int):
 def dispose_piece():
     """Move a held piece to the graveyard and release."""
     gx, gy = GRAVEYARD
-    linear_move_to(gx, gy, Z_SAFE)
+    _move_to_xy_at_safe_height(gx, gy)
     linear_move_to(gx, gy, Z_GRIP)
     electromagnet_off()
     linear_move_to(gx, gy, Z_SAFE)

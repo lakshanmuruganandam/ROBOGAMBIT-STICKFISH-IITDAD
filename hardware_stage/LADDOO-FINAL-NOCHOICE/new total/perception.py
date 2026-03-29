@@ -30,11 +30,11 @@ TOP_LEFT_Y  = 180
 BOARD_SIZE  = 6
 PIECE_IDS   = set(range(1, 11))
 
-ROBOT_REALITY = {  # * needs calibration to be accurate, do not use blindly *
-    21: (473,  177), 
-    22: (481, -114), 
-    23: (196, -37), 
-    24: (171,  181), 
+ROBOT_REALITY = {  # Regularized to a square-like rectangle for stable homography
+    21: (477, 179),
+    22: (477, -76),
+    23: (-184, -76),
+    24: (-184, 179),
 }
 
 world_pts = np.array([CORNER_WORLD[m]  for m in [21, 22, 23, 24]], dtype=np.float32)
