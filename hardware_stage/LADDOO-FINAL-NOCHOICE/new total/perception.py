@@ -1,4 +1,5 @@
 import math
+import os
 import cv2
 import cv2.aruco as aruco
 import numpy as np
@@ -59,6 +60,11 @@ H_matrix      = None
 corner_pixels = {}
 prev_board    = None
 
+FRAME_DUMP_DIR = os.path.join(os.path.dirname(__file__), "camera_frames")
+FRAME_DUMP_ENABLED = False
+FRAME_DUMP_EVERY_N = 1
+_FRAME_INDEX = 0
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def pixel_to_world(H, px, py):
@@ -95,6 +101,89 @@ def build_board(ids, corners, H):
         if row is not None:
             board[row][col] = mid
     return board
+
+
+def enhance_image(gray_image):
+    """Apply CLAHE contrast enhancement for tougher lighting."""
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    return clahe.apply(gray_image)
+
+
+def detect_markers_robust(gray_image):
+    """Detect markers using multiple passes and keep the best result."""
+    best_corners, best_ids, best_count = None, None, 0
+
+    # Pass 1: original grayscale
+    c1, i1, _ = detector.detectMarkers(gray_image)
+    n1 = 0 if i1 is None else len(i1)
+    if n1 > best_count:
+        best_corners, best_ids, best_count = c1, i1, n1
+
+    # Pass 2: CLAHE-enhanced
+    enhanced = enhance_image(gray_image)
+    c2, i2, _ = detector.detectMarkers(enhanced)
+    n2 = 0 if i2 is None else len(i2)
+    if n2 > best_count:
+        best_corners, best_ids, best_count = c2, i2, n2
+
+    # Pass 3: adaptive threshold
+    adaptive = cv2.adaptiveThreshold(
+        gray_image,
+        255,
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY,
+        11,
+        2,
+    )
+    c3, i3, _ = detector.detectMarkers(adaptive)
+    n3 = 0 if i3 is None else len(i3)
+    if n3 > best_count:
+        best_corners, best_ids, best_count = c3, i3, n3
+
+    return best_corners, best_ids
+
+
+def _recompute_world_to_robot_homography():
+    """Recompute world->robot homography after calibration updates."""
+    global H_WORLD_TO_ROBOT
+    wpts = np.array([CORNER_WORLD[m] for m in [21, 22, 23, 24]], dtype=np.float32)
+    rpts = np.array([ROBOT_REALITY[m] for m in [21, 22, 23, 24]], dtype=np.float32)
+    H_WORLD_TO_ROBOT, _ = cv2.findHomography(wpts, rpts)
+
+
+def set_robot_reality_from_cells(a1_xy, a6_xy, f6_xy, f1_xy):
+    """Update runtime robot calibration using board-corner cell coordinates."""
+    global ROBOT_REALITY
+    ROBOT_REALITY = {
+        21: (float(a1_xy[0]), float(a1_xy[1])),
+        22: (float(a6_xy[0]), float(a6_xy[1])),
+        23: (float(f6_xy[0]), float(f6_xy[1])),
+        24: (float(f1_xy[0]), float(f1_xy[1])),
+    }
+    _recompute_world_to_robot_homography()
+    print(f"[CALIB] Runtime ROBOT_REALITY updated: {ROBOT_REALITY}")
+
+
+def configure_frame_dump(enabled: bool, every_n: int = 1):
+    """Enable/disable frame dump and set sampling interval."""
+    global FRAME_DUMP_ENABLED, FRAME_DUMP_EVERY_N, _FRAME_INDEX
+    FRAME_DUMP_ENABLED = bool(enabled)
+    FRAME_DUMP_EVERY_N = max(1, int(every_n))
+    _FRAME_INDEX = 0
+    if FRAME_DUMP_ENABLED:
+        os.makedirs(FRAME_DUMP_DIR, exist_ok=True)
+        print(f"[PERCEPTION] Frame dump enabled: dir={FRAME_DUMP_DIR}, every_n={FRAME_DUMP_EVERY_N}")
+
+
+def _dump_frame(frame):
+    global _FRAME_INDEX
+    _FRAME_INDEX += 1
+    if not FRAME_DUMP_ENABLED:
+        return
+    if _FRAME_INDEX % FRAME_DUMP_EVERY_N != 0:
+        return
+    out_path = os.path.join(FRAME_DUMP_DIR, f"frame_{_FRAME_INDEX:06d}.png")
+    cv2.imwrite(out_path, frame)
 
 
 def recv_frame(sock, data, payload_size):
@@ -185,8 +274,9 @@ def get_stable_board(sock, stability_required=5):
  
         # 1. Standard processing logic from your original code
         frame = cv2.undistort(frame, CAMERA_MATRIX, DIST_COEFFS, None, CAMERA_MATRIX)
+        _dump_frame(frame)
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        corners, ids, _ = detector.detectMarkers(gray)
+        corners, ids = detect_markers_robust(gray)
 
         current_board = np.zeros((BOARD_SIZE, BOARD_SIZE), dtype=int)
 
@@ -218,7 +308,8 @@ def get_stable_board(sock, stability_required=5):
             # Also get the exact poses for your precision pickup
             poses = get_piece_poses(ids, corners, H_matrix)
             print("Board stable ✓")
-            current_board = np.rot90(current_board, k=3)
+            # build_board fills row/col in transposed orientation for this camera setup.
+            current_board = current_board.T.copy()
             return current_board, poses
 
         # Optional: brief sleep to prevent CPU spiking

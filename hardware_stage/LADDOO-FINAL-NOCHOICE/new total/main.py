@@ -78,7 +78,7 @@ STEP_TOL   = 10  # mm — if actual error > this after a step, log a warning
 
 
 
-PLAYING_WHITE = True  # Set to False if you want to play as Black (go second)
+PLAYING_WHITE = True  # Runtime prompt in __main__ can override this.
 
 COL_MAP = {'A': 0, 'B': 1, 'C': 2, 'D': 3, 'E': 4, 'F': 5}
 REV_COL_MAP = {v: k for k, v in COL_MAP.items()}
@@ -531,6 +531,61 @@ def debug_print(message: str):
         print(f"[DEBUG] {message}")
 
 
+def _prompt_xy(label: str, default_xy):
+    """Prompt for an x,y pair. Blank input keeps default."""
+    dx, dy = float(default_xy[0]), float(default_xy[1])
+    while True:
+        raw = input(f"{label} robot x,y [{dx:.1f},{dy:.1f}]: ").strip()
+        if raw == "":
+            return (dx, dy)
+        parts = raw.replace(" ", "").split(",")
+        if len(parts) != 2:
+            print("[SYSTEM] Invalid format. Enter as x,y")
+            continue
+        try:
+            return (float(parts[0]), float(parts[1]))
+        except ValueError:
+            print("[SYSTEM] Invalid number. Enter as x,y")
+
+
+def _prompt_int(label: str, default_value: int, min_value: int = 1):
+    """Prompt for integer value. Blank keeps default."""
+    while True:
+        raw = input(f"{label} [{default_value}]: ").strip()
+        if raw == "":
+            return default_value
+        try:
+            val = int(raw)
+            if val < min_value:
+                print(f"[SYSTEM] Value must be >= {min_value}")
+                continue
+            return val
+        except ValueError:
+            print("[SYSTEM] Invalid integer input.")
+
+
+def _wait_for_external_move(sock, previous_board: np.ndarray, phase_name: str):
+    """Wait for a human/opponent move and confirm the board actually changed."""
+    while True:
+        user_input = input(
+            f"\n[{phase_name}] Make the move on board, then press ENTER (or 'q' to quit): "
+        ).strip().lower()
+        if user_input == "q":
+            return None, None, True
+
+        new_board, new_poses = perception.get_stable_board(sock, stability_required=5)
+        if new_board is None:
+            print("[ERROR] Could not read board. Check camera stream and try again.")
+            continue
+
+        if np.array_equal(new_board, previous_board):
+            print("[SYNC] No board change detected. Please complete the move and press ENTER again.")
+            continue
+
+        print(f"[SYNC] {phase_name} move detected.")
+        return new_board, new_poses, False
+
+
 def calibration_helper():
     """
     Interactive helper to record corner calibration coordinates.
@@ -563,41 +618,77 @@ def calibration_helper():
 
 if __name__ == "__main__":
 
+    print("\n[SYSTEM] Enter corner calibration (press Enter to keep defaults).")
+    default_rr = perception.ROBOT_REALITY
+    a1_xy = _prompt_xy("A1", default_rr[21])
+    a6_xy = _prompt_xy("A6", default_rr[22])
+    f1_xy = _prompt_xy("F1", default_rr[24])
+    f6_xy = _prompt_xy("F6", default_rr[23])
+    perception.set_robot_reality_from_cells(a1_xy, a6_xy, f6_xy, f1_xy)
+    print(f"[CALIB] A1={a1_xy}  A6={a6_xy}  F1={f1_xy}  F6={f6_xy}")
+
+    while True:
+        color_choice = input("Bot color? Enter 'w' for White or 'b' for Black [w]: ").strip().lower()
+        if color_choice in ("w", "b", ""):
+            break
+        print("[SYSTEM] Invalid input. Please enter only 'w' or 'b'.")
+
+    PLAYING_WHITE = (color_choice != "b")
+    print(f"[SYSTEM] Bot will play {'WHITE' if PLAYING_WHITE else 'BLACK'}.")
+
+    frame_every_n = _prompt_int(
+        "Save every i-th camera frame (1 = save all)",
+        default_value=1,
+        min_value=1,
+    )
+    perception.configure_frame_dump(enabled=True, every_n=frame_every_n)
+    print(f"[SYSTEM] Camera frames will be saved in: {perception.FRAME_DUMP_DIR}")
 
     # 1. Setup connection once at the start
     sock = perception.init_perception()
 
     try:
         debug_print("--- Robot Game Started ---")
+        board, poses = perception.get_stable_board(sock, stability_required=5)
+        if board is None:
+            print("[ERROR] Initial board read failed. Exiting.")
+            raise SystemExit(1)
+
+        if PLAYING_WHITE:
+            phase_cycle = ["OUR_BOT", "OPPONENT", "OUR_HUMAN", "OPPONENT"]
+        else:
+            phase_cycle = ["OPPONENT", "OUR_BOT", "OPPONENT", "OUR_HUMAN"]
+
+        phase_idx = 0
+        print(f"[PHASE] Active cycle: {' -> '.join(phase_cycle)}")
+
         while True:
-            # 2. Get the board (blocks until board is stable)
-            # We look at the board *before* the human move to know the current state
-            board, poses = perception.get_stable_board(sock, stability_required=5)
-            
-            if board is not None:
-                debug_print("\n[PERCEPTION] Stable board detected:")
+            phase = phase_cycle[phase_idx]
+            print(f"\n[PHASE] {phase}")
+
+            if phase == "OUR_BOT":
+                debug_print("[PERCEPTION] Board before bot move:")
                 debug_print(board)
-                
-                # 3. YOUR TURN: Execute the robot's move
                 move_str = decide_move(board, playing_white=PLAYING_WHITE)
-                print(f"\n[ROBOT] Executing move: {move_str}")
+                print(f"[ROBOT] Executing move: {move_str}")
                 if move_str:
                     execute_turn(move_str, board, poses)
                     debug_print("[ROBOT] Move completed.")
-                
-                debug_print("-" * 30)
-                
-                # 4. WAIT FOR HUMAN: This pauses the loop
-                user_input = input("\n>>> Press ENTER to continue (or 'q' to quit): ").lower()
-                
-                # 5. BREAK CONDITION: Cleanly exit the game
-                if user_input == 'q':
+
+                board_after, poses_after = perception.get_stable_board(sock, stability_required=5)
+                if board_after is not None:
+                    board, poses = board_after, poses_after
+                else:
+                    print("[WARN] Could not refresh board after bot move. Keeping previous board state.")
+            else:
+                board_new, poses_new, should_quit = _wait_for_external_move(sock, board, phase)
+                if should_quit:
                     debug_print("[SYSTEM] Quitting game...")
                     break
-                    
-            else:
-                debug_print("[ERROR] Lost connection to camera. Attempting to reconnect...")
-                time.sleep(1)
+                board, poses = board_new, poses_new
+
+            phase_idx = (phase_idx + 1) % len(phase_cycle)
+            debug_print("-" * 30)
 
     except KeyboardInterrupt:
         debug_print("\n[SYSTEM] Manual stop detected.")
