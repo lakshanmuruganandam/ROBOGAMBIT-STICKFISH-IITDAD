@@ -18,17 +18,32 @@ import os
 import re
 from typing import Dict, Tuple
 
+import perception
+
 from calibration_workflow import ArmConfig, ArmController, CalibrationWorkflow
+
+
+# ============================================================================
+# Editable Quick Settings (you can change these directly before calibration)
+# ============================================================================
+CALIB_CAMERA_IP = "10.194.26.222"
+CALIB_CAMERA_PORT = 9999
+CALIB_ARM_PORT = "COM8"
+CALIB_MAGNET_PORT = "COM10"
+CALIB_BAUD = 115200
+CALIB_Z_HOVER = 200.0
+CALIB_Z_TOUCH = 20.0
+CALIB_STABLE_MODE = "folded"
 
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Pre-match calibration tools")
-    parser.add_argument("--arm-port", default=os.getenv("ROBO_ARM_SERIAL_PORT", "COM8"))
-    parser.add_argument("--magnet-port", default=os.getenv("ROBO_SOLENOID_SERIAL_PORT", "COM10"))
-    parser.add_argument("--baud", type=int, default=int(os.getenv("ROBO_SERIAL_BAUD", "115200")))
-    parser.add_argument("--z-hover", type=float, default=200.0)
-    parser.add_argument("--z-touch", type=float, default=20.0)
-    parser.add_argument("--stable", choices=["init", "folded"], default="init")
+    parser.add_argument("--arm-port", default=os.getenv("ROBO_ARM_SERIAL_PORT", CALIB_ARM_PORT))
+    parser.add_argument("--magnet-port", default=os.getenv("ROBO_SOLENOID_SERIAL_PORT", CALIB_MAGNET_PORT))
+    parser.add_argument("--baud", type=int, default=int(os.getenv("ROBO_SERIAL_BAUD", str(CALIB_BAUD))))
+    parser.add_argument("--z-hover", type=float, default=CALIB_Z_HOVER)
+    parser.add_argument("--z-touch", type=float, default=CALIB_Z_TOUCH)
+    parser.add_argument("--stable", choices=["init", "folded"], default=CALIB_STABLE_MODE)
     parser.add_argument(
         "--perception-file",
         default=os.path.join(os.path.dirname(__file__), "perception.py"),
@@ -191,6 +206,11 @@ def _menu() -> str:
 
 def main() -> None:
     args = _parse_args()
+
+    # Keep calib-tools camera endpoint aligned with editable calibration settings.
+    perception.SERVER_IP = CALIB_CAMERA_IP
+    perception.SERVER_PORT = CALIB_CAMERA_PORT
+
     cfg = ArmConfig(
         arm_port=args.arm_port,
         magnet_port=args.magnet_port,
@@ -203,6 +223,7 @@ def main() -> None:
     print("\n=== PRE-MATCH CALIBRATION TOOL ===")
     print(f"arm_port={cfg.arm_port}, magnet_port={cfg.magnet_port}, baud={cfg.baud}")
     print(f"stable_mode={cfg.stable_mode}, z_hover={cfg.z_hover}, z_touch={cfg.z_touch}")
+    print(f"camera_endpoint={perception.SERVER_IP}:{perception.SERVER_PORT}")
     print(f"perception_file={args.perception_file}")
     print(f"main_file={args.main_file}")
 

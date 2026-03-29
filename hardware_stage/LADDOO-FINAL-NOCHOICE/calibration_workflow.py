@@ -45,6 +45,18 @@ except Exception:
 
 import perception
 
+# ============================================================================
+# Editable Quick Settings (you can change these directly before calibration)
+# ============================================================================
+CALIB_CAMERA_IP = "10.194.26.222"
+CALIB_CAMERA_PORT = 9999
+CALIB_ARM_PORT = "COM8"
+CALIB_MAGNET_PORT = "COM10"
+CALIB_BAUD = 115200
+CALIB_Z_HOVER = 200.0
+CALIB_Z_TOUCH = 20.0
+CALIB_STABLE_MODE = "folded"
+
 
 CORNER_IDS = [21, 22, 23, 24]
 
@@ -334,17 +346,22 @@ class CalibrationWorkflow:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Arm + board calibration workflow")
-    parser.add_argument("--arm-port", default=os.getenv("ROBO_ARM_SERIAL_PORT", "COM8"))
-    parser.add_argument("--magnet-port", default=os.getenv("ROBO_SOLENOID_SERIAL_PORT", "COM10"))
-    parser.add_argument("--baud", type=int, default=int(os.getenv("ROBO_SERIAL_BAUD", "115200")))
-    parser.add_argument("--z-hover", type=float, default=200.0)
-    parser.add_argument("--z-touch", type=float, default=20.0)
-    parser.add_argument("--stable", choices=["init", "folded"], default="init")
+    parser.add_argument("--arm-port", default=os.getenv("ROBO_ARM_SERIAL_PORT", CALIB_ARM_PORT))
+    parser.add_argument("--magnet-port", default=os.getenv("ROBO_SOLENOID_SERIAL_PORT", CALIB_MAGNET_PORT))
+    parser.add_argument("--baud", type=int, default=int(os.getenv("ROBO_SERIAL_BAUD", str(CALIB_BAUD))))
+    parser.add_argument("--z-hover", type=float, default=CALIB_Z_HOVER)
+    parser.add_argument("--z-touch", type=float, default=CALIB_Z_TOUCH)
+    parser.add_argument("--stable", choices=["init", "folded"], default=CALIB_STABLE_MODE)
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+
+    # Keep workflow camera endpoint aligned with editable calibration settings.
+    perception.SERVER_IP = CALIB_CAMERA_IP
+    perception.SERVER_PORT = CALIB_CAMERA_PORT
+
     cfg = ArmConfig(
         arm_port=args.arm_port,
         magnet_port=args.magnet_port,
@@ -359,6 +376,7 @@ def main() -> None:
 
     print("\n=== CALIBRATION WORKFLOW START ===")
     print(f"arm_port={cfg.arm_port}, magnet_port={cfg.magnet_port}, baud={cfg.baud}")
+    print(f"camera_endpoint={perception.SERVER_IP}:{perception.SERVER_PORT}")
 
     try:
         arm.connect()

@@ -8,12 +8,31 @@ Work from main.py and perception.py.
 2.Restart hardware services:
 Restart arm controller server and camera stream server first.
 
-3.Put all devices on same Wi-Fi:
+3.Put all devices on same Wi-Fi if needed:
 Laptop, ESP/arm controller, and camera server must be on the same network.
 
 4.Set camera IP/port:
 In perception.py:16, set SERVER_IP.
 In perception.py:17, set SERVER_PORT.
+
+4.1 Calibration quick settings (new):
+You can now set calibration values directly at the top of BOTH files:
+- calib_tools.py
+- calibration_workflow.py
+
+Edit these variables there:
+- CALIB_CAMERA_IP
+- CALIB_CAMERA_PORT
+- CALIB_ARM_PORT
+- CALIB_MAGNET_PORT
+- CALIB_BAUD
+- CALIB_Z_HOVER
+- CALIB_Z_TOUCH
+- CALIB_STABLE_MODE
+
+Important:
+- For live main.py runtime, camera endpoint still comes from perception.py SERVER_IP/SERVER_PORT.
+- For live main.py runtime, arm/solenoid COM still comes from main.py (or env overrides).
 
 5.Set serial ports:
 In main.py:46, set arm COM port (COM4 currently).
