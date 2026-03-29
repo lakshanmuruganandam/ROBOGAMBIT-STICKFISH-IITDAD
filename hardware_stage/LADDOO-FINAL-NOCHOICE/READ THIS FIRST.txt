@@ -22,6 +22,72 @@ In main.py:50, set solenoid COM port (COM3 currently).
 6.Set clock offset:
 In main.py:54, set CLOCK_OFFSET_SEC (currently 10.0). # DONT CHANGE NOW 
 
+**Do This Exact Match-Day Flow**
+
+1. Fix the arena physically first.
+- Tape the board sheet flat (no wrinkles).
+- Keep all 4 corner ArUco stickers fully visible.
+- Keep arm/wires out of marker view when reading board.
+- Do not move the board or camera after calibration.
+
+2. Place 6–7 test pieces for quick validation.
+- Mandatory squares: `C3`, `A1`, `F6`, `B2`, `C2`.
+- Optional extras: `D4`, `E3`.
+- Center each piece inside its square.
+- Use same-height pieces for best Z consistency.
+
+3. Run calibration tool.
+- From project root:
+```powershell
+python hardware_stage/LADDOO-FINAL-NOCHOICE/calib_tools.py --stable folded
+```
+- In menu choose `1`.
+
+4. Perception verification loop (first stage).
+- Tool prints board continuously with `W_* / B_* / ..`.
+- It prints `A..F` top/bottom and `1..6` left/right.
+- While placing/adjusting pieces: press `y` to keep checking.
+- When board view is correct and stable: press `n` to continue.
+
+place: `C3`, `A1`, `F6`, `B2`, `C2`
+
+5. XY calibration stage.
+- Manually move tip to sticker center for IDs `21, 22, 23, 24` in prompted order.
+- Press Enter for each capture only when tip is steady.
+- This calibrates board-to-robot XY mapping.
+
+6. Z calibration stage.
+- Hover capture: place tip safely above piece top, press Enter.
+- Touch capture: place tip just touching piece top, press Enter.
+- Tool updates hover and pick Z values automatically.
+
+7. Auto-update stage.
+- Tool writes corner XY calibration into perception config.
+- Tool writes Z hover/pick values into main config.
+
+8. Motion validation stage (must pass all).
+- `center_C3`
+- `corner_A1_then_F6`
+- `capture_path_src_discard_dst`
+- After each, answer `y` only if landing is correct.
+
+9. Go/No-Go rule.
+- If `3/3` pass: proceed to game start immediately.
+- If any fail: rerun calibration once.
+- If still failing, adjust touch Z by ±2 mm and rerun calibration.
+
+10. Start match run.
+- Launch main right after successful calibration.
+- Do not change board/camera position between calibration and match start.
+
+---
+
+**Fast Recovery If First Live Move Misses**
+1. Re-run calibration tool once.
+2. Keep same corner stickers and board position.
+3. Change only touch Z by ±2 mm.
+4. Re-test one normal move + one capture move, then continue.
+
 7.Run main:
 run the main.py inside the laddoo-final-nochoice:
 "hardware_stage/LADDOO-FINAL-NOCHOICE/main.py"

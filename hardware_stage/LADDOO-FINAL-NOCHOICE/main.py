@@ -80,16 +80,16 @@ BLACK_PIECES = {6, 7, 8, 9, 10}
 
 PIECE_LABELS = {
     0: "..",
-    1: "WP",
-    2: "WN",
-    3: "WB",
-    4: "WQ",
-    5: "WK",
-    6: "BP",
-    7: "BN",
-    8: "BB",
-    9: "BQ",
-    10: "BK",
+    1: "W_P",
+    2: "W_N",
+    3: "W_B",
+    4: "W_Q",
+    5: "W_K",
+    6: "B_P",
+    7: "B_N",
+    8: "B_B",
+    9: "B_Q",
+    10: "B_K",
 }
 
 
@@ -355,14 +355,16 @@ def _idx_to_cell(row: int, col: int) -> str:
 def _print_board_human(board: np.ndarray, title: str = "BOARD") -> None:
     """Print a readable board for humans who do not know numeric piece IDs."""
     print(f"\n[{title}]")
-    print("      A   B   C   D   E   F")
+    top = "      A   B   C   D   E   F"
+    print(top)
     for r in range(6):
         row_tokens = []
         for c in range(6):
             pid = int(board[r][c])
             row_tokens.append(PIECE_LABELS.get(pid, f"{pid:02d}"))
-        print(f"  {r + 1} | " + " ".join(row_tokens))
-    print("Legend: WP WN WB WQ WK | BP BN BB BQ BK | .. empty")
+        print(f"  {r + 1} | " + " ".join(f"{tok:>3}" for tok in row_tokens) + f" | {r + 1}")
+    print(top)
+    print("Legend: W_* white, B_* black, .. empty")
 
 
 def log_move(prev_board: np.ndarray, curr_board: np.ndarray, log_file: str = LOG_FILE):
@@ -513,6 +515,32 @@ def _bot_time_budget_seconds() -> float:
     return max(0.5, min(12.0, TEAM_TIME_REMAINING * 0.12))
 
 
+def _settle_external_board(prev_board: np.ndarray, first_board: np.ndarray):
+    """Adaptively wait for external hand placement to settle without fixed long delay."""
+    min_wait = 0.6
+    step_wait = 0.35
+    max_wait = 2.0
+
+    waited = 0.0
+    candidate = first_board
+    time.sleep(min_wait)
+    waited += min_wait
+    probe = get_stable_board_state(required_frames=8)
+
+    while waited < max_wait and not np.array_equal(probe, candidate):
+        candidate = probe
+        print(f"[SYNC] board still changing; extending settle ({waited:.2f}s/{max_wait:.2f}s)")
+        time.sleep(step_wait)
+        waited += step_wait
+        probe = get_stable_board_state(required_frames=8)
+
+    if not np.array_equal(probe, candidate):
+        candidate = probe
+
+    print(f"[SYNC] external settle complete after {waited:.2f}s")
+    return candidate, waited
+
+
 def _print_startup_connections() -> None:
     """Print serial and camera connectivity status before starting the game loop."""
     arm_ok = bool(getattr(ser, "is_open", False)) if ser is not None else False
@@ -621,6 +649,12 @@ if __name__ == "__main__":
                 phase_started_at = time.time()
 
             elif not np.array_equal(curr, BOARD):
+                external_detected_at = time.time()
+                if phase != 0:
+                    # Allow manual piece placement (especially promotions) to settle adaptively.
+                    print("[SYNC] External move detected; adaptively settling board...")
+                    curr, _settle = _settle_external_board(BOARD, curr)
+
                 move_tuple = log_move(BOARD, curr, 'rglog.txt')
                 if phase != 0 and not check_legal(BOARD, move_tuple):
                     with open('rglog.txt', 'a') as f:
@@ -628,8 +662,8 @@ if __name__ == "__main__":
                     continue
 
                 if phase == 2:
-                    # Time from start of OUR_HUMAN phase until board changes counts to our team.
-                    _deduct_team_time(time.time() - phase_started_at, "our human turn")
+                    # Deduct only until move was first detected, not post-detection settle delay.
+                    _deduct_team_time(external_detected_at - phase_started_at, "our human turn")
 
                 BOARD=get_stable_board_state()
                 _print_board_human(BOARD, "BOARD AFTER EXTERNAL TURN")

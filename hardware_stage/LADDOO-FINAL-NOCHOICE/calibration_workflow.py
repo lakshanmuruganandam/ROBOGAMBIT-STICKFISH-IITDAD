@@ -48,6 +48,22 @@ import perception
 
 CORNER_IDS = [21, 22, 23, 24]
 
+PIECE_LABELS = {
+    0: "..",
+    1: "W_P",
+    2: "W_N",
+    3: "W_B",
+    4: "W_Q",
+    5: "W_K",
+    6: "B_P",
+    7: "B_N",
+    8: "B_B",
+    9: "B_Q",
+    10: "B_K",
+}
+
+COL_LABELS = ["A", "B", "C", "D", "E", "F"]
+
 
 @dataclass
 class ArmConfig:
@@ -158,6 +174,43 @@ class CalibrationWorkflow:
         print("3) Keep wires/arm outside camera view while detecting.")
         print("4) Confirm camera stream is running.")
         input("Press Enter when pre-flight is done...")
+
+    def _print_board_human(self, board: np.ndarray, title: str = "PERCEPTION BOARD") -> None:
+        print(f"\n=== {title} ===")
+        top = "      " + "  ".join(COL_LABELS)
+        print(top)
+        for r in range(6):
+            row_tokens = [PIECE_LABELS.get(int(board[r][c]), f"{int(board[r][c]):02d}") for c in range(6)]
+            left = str(r + 1)
+            right = str(r + 1)
+            print(f"  {left} | " + " ".join(f"{t:>3}" for t in row_tokens) + f" | {right}")
+        print(top)
+        print("Legend: W_* = white piece, B_* = black piece, .. = empty")
+
+    def verify_perception_board_loop(self) -> None:
+        """Continuously print perceived board until user chooses to proceed."""
+        print("\n=== PERCEPTION VISIBILITY CHECK ===")
+        print("Place your 6-7 test pieces and verify recognition.")
+        print("Control: y = looks good, keep checking | n = done, continue calibration")
+
+        vision = perception.BoardPerception(connect_socket=True)
+        try:
+            while True:
+                board, _poses = vision.get_latest_state()
+                if board is None:
+                    print("[WAIT] No frame/board yet. Check camera stream and corner markers.")
+                    ans = input("Continue waiting? (y/n): ").strip().lower()
+                    if ans == "n":
+                        raise RuntimeError("Perception not ready; cannot continue calibration safely.")
+                    continue
+
+                self._print_board_human(board, "PERCEPTION BOARD (LIVE)")
+                ans = input("Board correct? (y=continue checking, n=proceed): ").strip().lower()
+                if ans == "n":
+                    print("[OK] Perception check accepted. Proceeding to calibration.")
+                    break
+        finally:
+            vision.cleanup()
 
     def set_stable_start_pose(self) -> None:
         print("\n=== STABLE ARM START POSE ===")

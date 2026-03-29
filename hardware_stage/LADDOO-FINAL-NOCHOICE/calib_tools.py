@@ -148,6 +148,7 @@ def _run_prematch(
     skip_z_capture: bool,
 ) -> None:
     flow.preflight()
+    flow.verify_perception_board_loop()
     flow.set_stable_start_pose()
     flow.capture_corner_points()
     flow.compute_homography()
