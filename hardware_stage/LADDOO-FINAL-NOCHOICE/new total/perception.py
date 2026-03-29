@@ -32,8 +32,8 @@ PIECE_IDS   = set(range(1, 11))
 
 ROBOT_REALITY = {  # * needs calibration to be accurate, do not use blindly *
     21: (473,  177), 
-    22: (481, -114.5), 
-    23: (-196, -150), 
+    22: (481, -114), 
+    23: (-196, -37), 
     24: (-171,  181), 
 }
 

@@ -23,6 +23,9 @@ TESTING = False  # Set False when running on real hardware
 ARM_COM_PORT = "COM11"  # Adjust for your laptop
 MAGNET_COM_PORT = "COM12"  # Adjust for your laptop
 
+# Extra fold can look like random movement; keep it off until tuned on hardware.
+ENABLE_FOLD_AFTER_TURN = False
+
 # --- Communication ---
 # Serial port for the arm
 ser = None
@@ -338,6 +341,10 @@ def go_to_init():
     send_cmd('{"T":100}')
 
     time.sleep(1)  # wait for the arm to reach the home position
+
+    if not ENABLE_FOLD_AFTER_TURN:
+        debug_print("Fold skipped (ENABLE_FOLD_AFTER_TURN=False).")
+        return
 
     debug_print("Folding arm to clear camera view...")
     fold_cmd = (
