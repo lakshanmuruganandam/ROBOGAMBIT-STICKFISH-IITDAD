@@ -78,6 +78,20 @@ CLOCK_OFFSET_SEC = 10.0
 WHITE_PIECES = {1, 2, 3, 4, 5}
 BLACK_PIECES = {6, 7, 8, 9, 10}
 
+PIECE_LABELS = {
+    0: "..",
+    1: "WP",
+    2: "WN",
+    3: "WB",
+    4: "WQ",
+    5: "WK",
+    6: "BP",
+    7: "BN",
+    8: "BB",
+    9: "BQ",
+    10: "BK",
+}
+
 
 def _parse_move_string(move: str):
     """Return (piece_id, src_cell, dst_cell, promo_id_or_none) from engine move string."""
@@ -338,6 +352,19 @@ def _idx_to_cell(row: int, col: int) -> str:
     return f"{COL_LETTERS[col]}{row + 1}"
 
 
+def _print_board_human(board: np.ndarray, title: str = "BOARD") -> None:
+    """Print a readable board for humans who do not know numeric piece IDs."""
+    print(f"\n[{title}]")
+    print("      A   B   C   D   E   F")
+    for r in range(6):
+        row_tokens = []
+        for c in range(6):
+            pid = int(board[r][c])
+            row_tokens.append(PIECE_LABELS.get(pid, f"{pid:02d}"))
+        print(f"  {r + 1} | " + " ".join(row_tokens))
+    print("Legend: WP WN WB WQ WK | BP BN BB BQ BK | .. empty")
+
+
 def log_move(prev_board: np.ndarray, curr_board: np.ndarray, log_file: str = LOG_FILE):
     vacated  = []   # had a piece, now empty  → this is the source square
     arrived  = []   # was empty, now has piece → destination (no capture)
@@ -539,6 +566,7 @@ if __name__ == "__main__":
         print("[RULE] 2) Robot executes captures as OUT-then-IN.")
         print("[RULE] 3) On promotion, robot removes pawn; human places selected replacement piece.")
         BOARD= get_stable_board_state()
+        _print_board_human(BOARD, "INITIAL STABLE BOARD")
         phase_started_at = time.time()
         last_phase = None
 
@@ -587,6 +615,7 @@ if __name__ == "__main__":
                     time.sleep(0.25)
                 send_cmd(json.dumps({'T':100}))
                 BOARD=get_stable_board_state()
+                _print_board_human(BOARD, "BOARD AFTER OUR BOT TURN")
                 t+=1
                 _deduct_team_time(time.time() - bot_turn_start, "our bot turn (think + arm + promotion handling)")
                 phase_started_at = time.time()
@@ -603,6 +632,7 @@ if __name__ == "__main__":
                     _deduct_team_time(time.time() - phase_started_at, "our human turn")
 
                 BOARD=get_stable_board_state()
+                _print_board_human(BOARD, "BOARD AFTER EXTERNAL TURN")
                 t+=1
 
                 phase_started_at = time.time()
