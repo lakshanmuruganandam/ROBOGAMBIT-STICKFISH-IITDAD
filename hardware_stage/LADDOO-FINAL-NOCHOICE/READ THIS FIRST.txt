@@ -26,9 +26,6 @@ Edit these variables there:
 - CALIB_ARM_PORT
 - CALIB_MAGNET_PORT
 - CALIB_BAUD
-- CALIB_Z_HOVER
-- CALIB_Z_TOUCH
-- CALIB_STABLE_MODE
 
 Important:
 - For live main.py runtime, camera endpoint still comes from perception.py SERVER_IP/SERVER_PORT.
