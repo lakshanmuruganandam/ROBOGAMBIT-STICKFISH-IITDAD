@@ -33,8 +33,8 @@ PIECE_IDS   = set(range(1, 11))
 ROBOT_REALITY = {  # * needs calibration to be accurate, do not use blindly *
     21: (473,  177), 
     22: (481, -114), 
-    23: (-196, -37), 
-    24: (-171,  181), 
+    23: (196, -37), 
+    24: (171,  181), 
 }
 
 world_pts = np.array([CORNER_WORLD[m]  for m in [21, 22, 23, 24]], dtype=np.float32)

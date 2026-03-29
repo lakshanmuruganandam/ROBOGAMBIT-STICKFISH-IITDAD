@@ -61,7 +61,7 @@ EOAT_LEVEL = 0  # 3.14159...
 # --- Z-Heights ---
 Z_SAFE  = 100   # Cruise height — clears all pieces
 # Z_HOVER = 50    # Just above a piece (optional pre-grip pause) 
-Z_GRIP  = -50    # Gripper centred on piece
+Z_GRIP  = -80    # Gripper centred on piece
 
 # --- Graveyard ---
 GRAVEYARD = (400, -150)  # * robo coordinates (feedback)
