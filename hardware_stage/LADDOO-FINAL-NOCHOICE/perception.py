@@ -175,7 +175,9 @@ class BoardPerception:
         self.last_stable_board = None
         self.last_stable_poses = {}
         self.stability_required = max(0, int(os.getenv("PERCEPTION_STABILITY_FRAMES", "3")))
-        self.use_robot_coords = os.getenv("PERCEPTION_USE_ROBOT_REALITY", "1") == "1"
+        # Opponent-style calibration flow: keep perception in board-world by default.
+        # Main applies world->robot calibration for commanded arm targets.
+        self.use_robot_coords = os.getenv("PERCEPTION_USE_ROBOT_REALITY", "0") == "1"
 
         if connect_socket:
             print(f"Connecting to {SERVER_IP}:{SERVER_PORT} ...")

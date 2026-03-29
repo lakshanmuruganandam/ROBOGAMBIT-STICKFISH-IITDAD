@@ -111,19 +111,28 @@ def _cell_to_world(cell: str):
 
 
 def _perception_outputs_robot_coords() -> bool:
-    """True when pose outputs are already transformed to robot coordinates."""
+    """True when perception poses are already transformed to robot coordinates."""
     if vision_system is not None and hasattr(vision_system, "use_robot_coords"):
         return bool(getattr(vision_system, "use_robot_coords"))
     # Keep default aligned with perception.BoardPerception.
-    return os.getenv("PERCEPTION_USE_ROBOT_REALITY", "1") == "1"
+    return os.getenv("PERCEPTION_USE_ROBOT_REALITY", "0") == "1"
+
+
+def _calibration_active() -> bool:
+    """True when world->robot homography should be applied for arm commands."""
+    return os.getenv("ROBO_USE_WORLD_TO_ROBOT", "1") == "1" and hasattr(perception, "apply_world_to_robot")
+
+
+def _world_to_arm(wx: float, wy: float):
+    if _calibration_active():
+        return perception.apply_world_to_robot(wx, wy)
+    return wx, wy
 
 
 def _cell_to_arm_target(cell: str):
     """Map a board cell to the coordinate frame used by arm commands."""
     wx, wy = _cell_to_world(cell)
-    if _perception_outputs_robot_coords() and hasattr(perception, "apply_world_to_robot"):
-        return perception.apply_world_to_robot(wx, wy)
-    return wx, wy
+    return _world_to_arm(wx, wy)
 
 
 def _init_hardware() -> None:
@@ -168,20 +177,25 @@ def _cleanup_hardware() -> None:
         ser2 = None
 
 
-def _nearest_pose_for_piece(piece_id: int, target_xy):
-    """Use detected piece poses when available; fallback to target cell center."""
+def _nearest_pose_for_piece(piece_id: int, target_world_xy, target_arm_xy):
+    """Use detected poses when available; return coordinate in arm command frame."""
     if piece_id is None:
-        return target_xy
+        return target_arm_xy
     pvals = POSES.get(piece_id)
     if pvals is None:
-        return target_xy
+        return target_arm_xy
     if isinstance(pvals, tuple):
-        return pvals
+        pvals = [pvals]
     if isinstance(pvals, list) and pvals:
-        tx, ty = target_xy
-        best = min(pvals, key=lambda p: (p[0] - tx) ** 2 + (p[1] - ty) ** 2)
-        return best
-    return target_xy
+        if _perception_outputs_robot_coords():
+            tx, ty = target_arm_xy
+            best = min(pvals, key=lambda p: (p[0] - tx) ** 2 + (p[1] - ty) ** 2)
+            return best
+
+        tx, ty = target_world_xy
+        best_w = min(pvals, key=lambda p: (p[0] - tx) ** 2 + (p[1] - ty) ** 2)
+        return _world_to_arm(float(best_w[0]), float(best_w[1]))
+    return target_arm_xy
 
 def get_board_state() -> np.ndarray:
     """Use the perception module to get the current board state."""
@@ -257,11 +271,13 @@ def movetocmd(move: str) -> list:
 
     # ── Parse move string ─────────────────────────────────────────────────────
     mover_piece, src_cell, dst_cell, promo_id = _parse_move_string(move)
-    src_x, src_y = _cell_to_arm_target(src_cell)
-    dst_x, dst_y = _cell_to_arm_target(dst_cell)
+    src_wx, src_wy = _cell_to_world(src_cell)
+    dst_wx, dst_wy = _cell_to_world(dst_cell)
+    src_x, src_y = _world_to_arm(src_wx, src_wy)
+    dst_x, dst_y = _world_to_arm(dst_wx, dst_wy)
 
     # Use live pose if available to improve pick accuracy.
-    src_x, src_y = _nearest_pose_for_piece(mover_piece, (src_x, src_y))
+    src_x, src_y = _nearest_pose_for_piece(mover_piece, (src_wx, src_wy), (src_x, src_y))
 
     # ── Check for capture (enemy piece sitting at destination?) ───────────────
     board = get_board_state()
@@ -274,7 +290,7 @@ def movetocmd(move: str) -> list:
     # ── 1. Capture: clear the destination square first ────────────────────────
     if is_capture:
         captured_id = int(board[dst_row][dst_col])
-        cap_x, cap_y = _nearest_pose_for_piece(captured_id, (dst_x, dst_y))
+        cap_x, cap_y = _nearest_pose_for_piece(captured_id, (dst_wx, dst_wy), (dst_x, dst_y))
         steps += pick_from(cap_x, cap_y)
         steps += place_at(DISCARD_X, DISCARD_Y)
 
@@ -494,7 +510,11 @@ def _print_startup_connections() -> None:
     )
     print(
         f"[STARTUP] calibration_mode="
-        f"{'WORLD_TO_ROBOT_ACTIVE' if _perception_outputs_robot_coords() else 'BOARD_WORLD_DIRECT'}"
+        f"{'WORLD_TO_ROBOT_ACTIVE' if _calibration_active() else 'BOARD_WORLD_DIRECT'}"
+    )
+    print(
+        f"[STARTUP] pose_frame="
+        f"{'ROBOT' if _perception_outputs_robot_coords() else 'WORLD'}"
     )
 
    
